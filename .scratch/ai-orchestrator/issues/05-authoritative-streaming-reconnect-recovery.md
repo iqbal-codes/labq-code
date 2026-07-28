@@ -4,10 +4,10 @@
 
 **Blocked by:** 04 — Interrupt, Stop, and Provider-Exit Handling
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] The typed transport validates wire shape and authorization before dispatching commands or creating environment- and thread-scoped subscriptions.
-- [ ] A subscription begins with a synchronization snapshot or marker and then emits one server-authoritative ordered event stream; replay starts strictly after an exclusive sequence cursor.
-- [ ] Recovery handles an exact replay boundary, sequence gaps, failed replay, no-progress limits, involuntary disconnects, and bounded snapshot fallback deterministically.
-- [ ] The client applies each sequence at most once, preserves newer live state during fast reconnects, and converges to a fresh server snapshot without duplicate messages, activities, approvals, or turns.
-- [ ] Transport, authorization, subscription, and recovery tests cover read-only observation, mutation denial, replay, gap detection, resubscription, fallback, and convergence.
+- [x] The typed transport validates wire shape and authorization before dispatching commands or creating environment- and thread-scoped subscriptions.
+- [x] A subscription begins with a synchronization snapshot or marker and then emits one server-authoritative ordered event stream; replay starts strictly after an exclusive sequence cursor.
+- [x] Recovery handles an exact replay boundary, sequence gaps, failed replay, no-progress limits, involuntary disconnects, and bounded snapshot fallback deterministically.
+- [x] The client applies each sequence at most once, preserves newer live state during fast reconnects, and converges to a fresh server snapshot without duplicate messages, activities, approvals, or turns.
+- [x] Transport, authorization, subscription, and recovery tests cover read-only observation, mutation denial, replay, gap detection, resubscription, fallback, and convergence.
