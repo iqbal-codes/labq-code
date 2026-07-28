@@ -488,6 +488,48 @@ describe("OrchestratorEngine", () => {
     // Only one event was created
     expect(engine.getEvents().length).toBe(1);
   });
+  test("serializes concurrent create_project commands with distinct command_ids and same project_id", async () => {
+    const managedRoot = makeTempDir();
+    const delayedCloner = async (_url: string, targetPath: string) => {
+      await new Promise((r) => setTimeout(r, 40));
+      fs.writeFileSync(path.join(targetPath, "cloned.txt"), "ok");
+    };
+
+    const sourceManager = new SourceManager({
+      managedWorkspaceRoot: managedRoot,
+      gitCloner: delayedCloner,
+    });
+    const engine = new OrchestratorEngine(sourceManager);
+
+    const cmd1 = {
+      kind: "create_project" as const,
+      command_id: "cmd-id-1",
+      project_id: "same-explicit-id",
+      name: "Proj 1",
+      source: { kind: "git_url" as const, url: "https://github.com/example/repo1.git" },
+    };
+    const cmd2 = {
+      kind: "create_project" as const,
+      command_id: "cmd-id-2",
+      project_id: "same-explicit-id",
+      name: "Proj 2",
+      source: { kind: "git_url" as const, url: "https://github.com/example/repo2.git" },
+    };
+
+    const [res1, res2] = await Promise.all([
+      engine.dispatchCommand(cmd1),
+      engine.dispatchCommand(cmd2),
+    ]);
+
+    // One succeeds, one is rejected with project_already_exists
+    const successCount = [res1.ok, res2.ok].filter(Boolean).length;
+    const failCount = [res1.ok, res2.ok].filter((ok) => !ok).length;
+    expect(successCount).toBe(1);
+    expect(failCount).toBe(1);
+
+    const failedRes = (!res1.ok ? res1 : res2) as Extract<typeof res1, { ok: false }>;
+    expect(failedRes.code).toBe("project_already_exists");
+  });
 
   test("filters live event subscriptions by project_id and thread_id scope", async () => {
     const dir1 = makeTempDir();

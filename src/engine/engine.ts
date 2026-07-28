@@ -26,6 +26,7 @@ export class OrchestratorEngine {
   private sourceManager: SourceManager;
   private listeners: Set<ListenerEntry> = new Set();
   private inFlightCommands: Map<string, Promise<CommandResult>> = new Map();
+  private dispatchQueue: Promise<unknown> = Promise.resolve();
 
   constructor(sourceManager?: SourceManager) {
     this.sourceManager = sourceManager || new SourceManager();
@@ -66,6 +67,21 @@ export class OrchestratorEngine {
   }
 
   private async executeCommand(command: Command): Promise<CommandResult> {
+    const queuePromise = this.dispatchQueue.then(() => this.processCommand(command));
+    this.dispatchQueue = queuePromise.catch(() => {});
+    return await queuePromise;
+  }
+
+  private async processCommand(command: Command): Promise<CommandResult> {
+    // Re-check receipt inside queue lock
+    const existingReceipt = this.receipts.get(command.command_id);
+    if (existingReceipt) {
+      return {
+        ...existingReceipt.result,
+        duplicate: true,
+      };
+    }
+
     // 1. Resolve source for project creation if applicable
     let resolvedSource;
     if (command.kind === "create_project") {
