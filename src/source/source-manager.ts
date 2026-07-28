@@ -112,8 +112,15 @@ export class SourceManager {
       } catch (err: unknown) {
         // Transactional cleanup on failure or cancellation
         this.cleanupPath(workspacePath);
+        const errName = err instanceof Error ? err.name : "";
         const message = err instanceof Error ? err.message : String(err);
-        const code = message.includes("canceled") ? "acquisition_canceled" : "acquisition_failed";
+        const lowerMsg = message.toLowerCase();
+        const isCanceled =
+          Boolean(options?.signal?.aborted) ||
+          errName === "AbortError" ||
+          lowerMsg.includes("cancel") ||
+          lowerMsg.includes("abort");
+        const code = isCanceled ? "acquisition_canceled" : "acquisition_failed";
         return {
           ok: false,
           code,
