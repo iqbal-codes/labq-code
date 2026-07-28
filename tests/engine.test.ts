@@ -538,4 +538,33 @@ describe("OrchestratorEngine", () => {
     expect(proj1Events.length).toBe(1);
     expect(proj1Events[0].data.thread.id).toBe("th-sub-1");
   });
+  test("rejects project creation with empty name", async () => {
+    const engine = new OrchestratorEngine();
+    const res = await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "cmd-empty-name",
+      name: "   ",
+      source: { kind: "local_folder", path: makeTempDir() },
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe("invalid_command");
+    }
+  });
+
+  test("rejects hosted source creation with empty repository locator", async () => {
+    const engine = new OrchestratorEngine();
+    const res = await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "cmd-empty-repo",
+      name: "Empty Repo Proj",
+      source: { kind: "github", repo: "  " },
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.code).toBe("invalid_source");
+    }
+  });
 });

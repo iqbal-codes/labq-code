@@ -33,6 +33,14 @@ export function decideCommand(
 ): DeciderResult {
   switch (command.kind) {
     case "create_project": {
+      if (!command.name || !command.name.trim()) {
+        return {
+          ok: false,
+          code: "invalid_command",
+          detail: "Project name cannot be empty.",
+        };
+      }
+
       if (!resolvedSource) {
         return {
           ok: false,
@@ -40,7 +48,6 @@ export function decideCommand(
           detail: "Project creation requires a resolved ProjectSource.",
         };
       }
-
       const projectId =
         command.project_id ||
         `proj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

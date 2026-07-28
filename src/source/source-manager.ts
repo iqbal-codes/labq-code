@@ -113,12 +113,21 @@ export class SourceManager {
     }
 
     // Hosted source kinds remain visible as setup-required until configured
+    const repoLocator = typeof source.repo === "string" ? source.repo.trim() : "";
+    if (!repoLocator) {
+      return {
+        ok: false,
+        code: "invalid_source",
+        detail: `Hosted source '${source.kind}' requires a non-empty repository locator string.`,
+      };
+    }
+
     return {
       ok: true,
       source: {
         kind: source.kind,
         status: "setup_required",
-        locator: source.repo,
+        locator: repoLocator,
       },
     };
   }
