@@ -90,11 +90,6 @@ export const DEFAULT_PI_CATALOG: CuratedPiCatalog = {
       supported: true,
       description: "Direct execution mode for interactive coding tasks.",
     },
-    {
-      mode: "plan",
-      supported: false,
-      description: "Plan workflow mode is unsupported in Pi v1 delivery.",
-    },
   ],
   capabilities: Object.values(PI_PROVIDER_CAPABILITIES.capabilities),
 };

@@ -104,12 +104,173 @@ function validateFieldValue(
   return null;
 }
 
+function validateCommandShape(command: Command): DeciderResult | null {
+  if (command === null || typeof command !== "object") {
+    return {
+      ok: false,
+      code: "invalid_command",
+      detail: "Command must be an object.",
+    };
+  }
+
+  const value = command as unknown as {
+    command_id?: unknown;
+    kind?: unknown;
+    name?: unknown;
+    source?: unknown;
+    project_id?: unknown;
+    model?: unknown;
+    access_profile?: unknown;
+    interaction_mode?: unknown;
+    thread_id?: unknown;
+    turn_id?: unknown;
+    request_id?: unknown;
+    decision?: unknown;
+    content?: unknown;
+    values?: unknown;
+  };
+  const requireString = (field: keyof typeof value): DeciderResult | null =>
+    typeof value[field] === "string" && (value[field] as string).trim()
+      ? null
+      : {
+          ok: false,
+          code: "invalid_command",
+          detail: `Command field '${field}' must be a non-empty string.`,
+        };
+
+  const commandIdError = requireString("command_id");
+  if (commandIdError) return commandIdError;
+  const kindError = requireString("kind");
+  if (kindError) return kindError;
+
+  switch (command.kind) {
+    case "create_project": {
+      const nameError = requireString("name");
+      if (nameError) return nameError;
+      if (
+        value.source === null ||
+        typeof value.source !== "object" ||
+        Array.isArray(value.source)
+      ) {
+        return {
+          ok: false,
+          code: "invalid_command",
+          detail: "Project creation requires a source descriptor.",
+        };
+      }
+      break;
+    }
+    case "archive_project":
+    case "settle_project":
+    case "delete_project":
+      return requireString("project_id");
+    case "create_thread":
+      for (const field of ["project_id", "model", "access_profile", "interaction_mode"] as const) {
+        const error = requireString(field);
+        if (error) return error;
+      }
+      break;
+    case "archive_thread":
+    case "settle_thread":
+    case "delete_thread":
+      return requireString("thread_id");
+    case "start_turn": {
+      const threadError = requireString("thread_id");
+      if (threadError) return threadError;
+      if (
+        value.content === null ||
+        typeof value.content !== "object" ||
+        Array.isArray(value.content) ||
+        typeof (value.content as { text?: unknown }).text !== "string"
+      ) {
+        return {
+          ok: false,
+          code: "invalid_command",
+          detail: "Start-turn content must include a text string.",
+        };
+      }
+      break;
+    }
+    case "interrupt_turn":
+      for (const field of ["turn_id", "thread_id"] as const) {
+        const error = requireString(field);
+        if (error) return error;
+      }
+      break;
+    case "stop_turn":
+      return requireString("thread_id");
+    case "respond_approval":
+      for (const field of ["turn_id", "thread_id", "request_id"] as const) {
+        const error = requireString(field);
+        if (error) return error;
+      }
+      if (value.decision !== "approved" && value.decision !== "declined") {
+        return {
+          ok: false,
+          code: "invalid_command",
+          detail: "Approval decision must be 'approved' or 'declined'.",
+        };
+      }
+      break;
+    case "respond_input":
+      for (const field of ["turn_id", "thread_id", "request_id"] as const) {
+        const error = requireString(field);
+        if (error) return error;
+      }
+      if (
+        value.values === null ||
+        typeof value.values !== "object" ||
+        Array.isArray(value.values)
+      ) {
+        return {
+          ok: false,
+          code: "invalid_command",
+          detail: "Input response values must be an object.",
+        };
+      }
+      break;
+    default:
+      break;
+  }
+
+  return null;
+}
+function validateThreadProject(snapshot: Snapshot, thread: Thread | undefined): DeciderResult | null {
+  if (!thread) {
+    return {
+      ok: false,
+      code: "thread_not_found",
+      detail: "Thread does not exist.",
+    };
+  }
+  const project = snapshot.projects[thread.project_id];
+  if (!project) {
+    return {
+      ok: false,
+      code: "project_not_found",
+      detail: `Project '${thread.project_id}' does not exist.`,
+    };
+  }
+  if (project.status === "deleted") {
+    return {
+      ok: false,
+      code: "invalid_project_state",
+      detail: `Cannot mutate thread '${thread.id}' after project '${project.id}' was deleted.`,
+    };
+  }
+  return null;
+}
+
+
 export function decideCommand(
   snapshot: Snapshot,
   command: Command,
   resolvedSource?: ProjectSource,
   nowIso: string = new Date().toISOString()
 ): DeciderResult {
+  const commandError = validateCommandShape(command);
+  if (commandError) return commandError;
+
   switch (command.kind) {
     case "create_project": {
       if (!command.name || !command.name.trim()) {
@@ -319,6 +480,8 @@ export function decideCommand(
           detail: `Thread '${command.thread_id}' does not exist.`,
         };
       }
+      const projectError = validateThreadProject(snapshot, thread);
+      if (projectError) return projectError;
       if (thread.status !== "active") {
         return {
           ok: false,
@@ -342,6 +505,8 @@ export function decideCommand(
           detail: `Thread '${command.thread_id}' does not exist.`,
         };
       }
+      const projectError = validateThreadProject(snapshot, thread);
+      if (projectError) return projectError;
       if (thread.status !== "active" && thread.status !== "archived") {
         return {
           ok: false,
@@ -365,6 +530,8 @@ export function decideCommand(
           detail: `Thread '${command.thread_id}' does not exist.`,
         };
       }
+      const projectError = validateThreadProject(snapshot, thread);
+      if (projectError) return projectError;
       if (thread.status === "deleted") {
         return {
           ok: false,
@@ -388,6 +555,8 @@ export function decideCommand(
           detail: `Thread '${command.thread_id}' does not exist.`,
         };
       }
+      const projectError = validateThreadProject(snapshot, thread);
+      if (projectError) return projectError;
       if (thread.status !== "active") {
         return {
           ok: false,
@@ -460,7 +629,10 @@ export function decideCommand(
 
     case "interrupt_turn": {
       const thread = snapshot.threads[command.thread_id];
-      if (thread && thread.status === "deleted") {
+      const projectError = validateThreadProject(snapshot, thread);
+      if (projectError) return projectError;
+
+      if (thread?.status === "deleted") {
         return {
           ok: false,
           code: "invalid_thread_state",
@@ -513,6 +685,8 @@ export function decideCommand(
           detail: `Thread '${command.thread_id}' does not exist.`,
         };
       }
+      const projectError = validateThreadProject(snapshot, thread);
+      if (projectError) return projectError;
       if (thread.status === "deleted") {
         return {
           ok: false,
@@ -576,6 +750,12 @@ export function decideCommand(
         snapshot, command.turn_id, command.thread_id, command.request_id, "approval"
       );
       if (!baseCheck.ok) return baseCheck;
+      const approvalTurn = snapshot.turns[command.turn_id];
+      const projectError = validateThreadProject(
+        snapshot,
+        approvalTurn ? snapshot.threads[approvalTurn.thread_id] : undefined
+      );
+      if (projectError) return projectError;
       return {
         ok: true,
         events: [{
@@ -595,6 +775,12 @@ export function decideCommand(
         snapshot, command.turn_id, command.thread_id, command.request_id, "input"
       );
       if (!baseCheck.ok) return baseCheck;
+      const inputTurn = snapshot.turns[command.turn_id];
+      const projectError = validateThreadProject(
+        snapshot,
+        inputTurn ? snapshot.threads[inputTurn.thread_id] : undefined
+      );
+      if (projectError) return projectError;
 
       const turn = snapshot.turns[command.turn_id]!;
 

@@ -66,6 +66,101 @@ describe("OrchestratorEngine", () => {
     expect(thread?.access_profile).toBe("workspace-write");
     expect(thread?.interaction_mode).toBe("execute");
   });
+  test("advertises only Pi execute mode in fresh durable snapshots", () => {
+    const engine = new OrchestratorEngine();
+
+    expect(engine.getSnapshot().catalog.interaction_modes).toEqual([
+      {
+        mode: "execute",
+        supported: true,
+        description: "Direct execution mode for interactive coding tasks.",
+      },
+    ]);
+  });
+
+  test("rejects thread lifecycle mutation after project tombstoning", async () => {
+    const localDir = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "project-for-tombstone",
+      project_id: "tombstone-project",
+      name: "Tombstone Project",
+      source: { kind: "local_folder", path: localDir },
+    });
+    await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "thread-for-tombstone",
+      thread_id: "tombstone-thread",
+      project_id: "tombstone-project",
+      model: "pi-default",
+      access_profile: "read-only",
+      interaction_mode: "execute",
+    });
+    await engine.dispatchCommand({
+      kind: "delete_project",
+      command_id: "tombstone-project-delete",
+      project_id: "tombstone-project",
+    });
+
+    const result = await engine.dispatchCommand({
+      kind: "archive_thread",
+      command_id: "tombstone-thread-archive",
+      thread_id: "tombstone-thread",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("invalid_project_state");
+    }
+    expect(engine.getEvents()).toHaveLength(3);
+  });
+
+  test("rejects approval decisions outside the canonical enum", async () => {
+    const localDir = makeTempDir();
+    const engine = new OrchestratorEngine();
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "approval-project",
+      project_id: "approval-project",
+      name: "Approval Project",
+      source: { kind: "local_folder", path: localDir },
+    });
+
+    const result = await engine.dispatchCommand({
+      kind: "respond_approval",
+      command_id: "invalid-approval",
+      turn_id: "missing-turn",
+      thread_id: "missing-thread",
+      request_id: "missing-request",
+      decision: "maybe",
+    } as any);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("invalid_command");
+    }
+    expect(engine.getEvents()).toHaveLength(1);
+  });
+  test("rejects malformed commands without changing durable state", async () => {
+    const engine = new OrchestratorEngine();
+    const before = engine.getSnapshot();
+
+    const result = await engine.dispatchCommand({
+      kind: "start_turn",
+      command_id: "malformed-turn",
+      thread_id: "missing-thread",
+      content: undefined,
+    } as any);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("invalid_command");
+    }
+    expect(engine.getEvents()).toEqual([]);
+    expect(engine.getSnapshot()).toEqual(before);
+  });
 
   test("rejects thread creation with unsupported interaction mode 'plan'", async () => {
     const localDir = makeTempDir();

@@ -57,6 +57,20 @@ export class OrchestratorEngine {
   }
 
   async dispatchCommand(command: Command): Promise<CommandResult> {
+    const commandValue = command as unknown as { command_id?: unknown };
+    if (
+      command === null ||
+      typeof command !== "object" ||
+      typeof commandValue.command_id !== "string" ||
+      !commandValue.command_id.trim()
+    ) {
+      return {
+        ok: false,
+        code: "invalid_command",
+        detail: "Command must include a non-empty command_id.",
+      };
+    }
+
     // 1. Idempotency check: duplicate command returning existing receipt
     const existingReceipt = this.receipts.get(command.command_id);
     if (existingReceipt) {
@@ -761,15 +775,23 @@ export class OrchestratorEngine {
   getThread(threadId: string, includeDeleted = false): Thread | undefined {
     const th = this.snapshot.threads[threadId];
     if (!th) return undefined;
-    if (!includeDeleted && th.status === "deleted") return undefined;
+    const project = this.snapshot.projects[th.project_id];
+    if (
+      !includeDeleted &&
+      (th.status === "deleted" || project?.status === "deleted")
+    ) {
+      return undefined;
+    }
     return structuredClone(th);
   }
 
   listThreads(projectId: string, includeDeleted = false): Thread[] {
+    const project = this.snapshot.projects[projectId];
     const list = Object.values(this.snapshot.threads).filter(
       (t) =>
         t.project_id === projectId &&
-        (includeDeleted || t.status !== "deleted")
+        (includeDeleted ||
+          (t.status !== "deleted" && project?.status !== "deleted"))
     );
     return structuredClone(list);
   }
