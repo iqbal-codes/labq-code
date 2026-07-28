@@ -112,6 +112,7 @@ export interface DomainEventMeta {
 }
 
 export type DomainEvent =
+  | ({ kind: "SnapshotEmitted"; data: { snapshot: Snapshot } } & DomainEventMeta)
   | ({ kind: "ProjectCreated"; data: { project: Project } } & DomainEventMeta)
   | ({ kind: "ProjectArchived"; data: { project_id: string } } & DomainEventMeta)
   | ({ kind: "ProjectSettled"; data: { project_id: string } } & DomainEventMeta)

@@ -552,8 +552,7 @@ describe("OrchestratorEngine", () => {
     });
 
     const proj1Events: any[] = [];
-    engine.subscribe((e) => proj1Events.push(e), { project_id: "proj-sub-1" });
-
+    engine.subscribe((e) => proj1Events.push(e), { project_id: "proj-sub-1" }, { emitInitialSnapshot: false });
     // Create thread in proj-sub-1
     await engine.dispatchCommand({
       kind: "create_thread",
@@ -579,6 +578,24 @@ describe("OrchestratorEngine", () => {
     // Proj 1 listener should only receive thread 1 event, not thread 2 event
     expect(proj1Events.length).toBe(1);
     expect(proj1Events[0].data.thread.id).toBe("th-sub-1");
+  });
+  test("emits initial snapshot marker on subscription by default", async () => {
+    const dir = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p1",
+      name: "Proj",
+      source: { kind: "local_folder", path: dir },
+    });
+
+    const receivedEvents: any[] = [];
+    engine.subscribe((e) => receivedEvents.push(e));
+
+    expect(receivedEvents.length).toBe(1);
+    expect(receivedEvents[0].kind).toBe("SnapshotEmitted");
+    expect(receivedEvents[0].data.snapshot.sequence).toBe(1);
   });
   test("rejects project creation with empty name", async () => {
     const engine = new OrchestratorEngine();

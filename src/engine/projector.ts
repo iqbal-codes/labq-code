@@ -25,6 +25,9 @@ export function applyEvent(
   };
 
   switch (event.kind) {
+    case "SnapshotEmitted": {
+      return structuredClone(event.data.snapshot);
+    }
     case "ProjectCreated": {
       const proj = event.data.project;
       next.projects[proj.id] = structuredClone(proj);

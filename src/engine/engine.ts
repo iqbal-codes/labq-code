@@ -284,10 +284,28 @@ export class OrchestratorEngine {
 
   subscribe(
     listener: (event: DomainEvent) => void,
-    filter?: { project_id?: string; thread_id?: string }
+    filter?: { project_id?: string; thread_id?: string },
+    options: { emitInitialSnapshot?: boolean } = { emitInitialSnapshot: true }
   ): () => void {
     const entry: ListenerEntry = { listener, filter };
     this.listeners.add(entry);
+
+    if (options.emitInitialSnapshot !== false) {
+      const snapshotEvent: DomainEvent = {
+        sequence: this.snapshot.sequence,
+        event_id: `snapshot-${this.snapshot.sequence}`,
+        timestamp: new Date().toISOString(),
+        command_id: "system-subscribe-snapshot",
+        kind: "SnapshotEmitted",
+        data: { snapshot: this.getSnapshot() },
+      };
+      try {
+        listener(structuredClone(snapshotEvent));
+      } catch {
+        // Prevent listener error from breaking subscription
+      }
+    }
+
     return () => {
       this.listeners.delete(entry);
     };
