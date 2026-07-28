@@ -1,4 +1,4 @@
-import type { Snapshot, DomainEvent, CuratedPiCatalog, Turn, ToolActivityStatus, ChangeSummary, FileChangeSummary, ToolActivity } from "../domain/types.js";
+import type { Snapshot, DomainEvent, CuratedPiCatalog, Turn, ToolActivityStatus, ChangeSummary, FileChangeSummary, ToolActivity, PendingRequestStatus } from "../domain/types.js";
 import { boundChangeSummary } from "../domain/types.js";
 import { DEFAULT_PI_CATALOG } from "../catalog/pi-catalog.js";
 
@@ -390,7 +390,7 @@ export function applyEvent(
         pendingReq && pendingReq.status === "pending"
           ? {
               ...pendingReq,
-              status: (pendingReq.kind === "approval" ? "declined" : "cancelled") as const,
+              status: (pendingReq.kind === "approval" ? "declined" : "cancelled") as PendingRequestStatus,
               resolved_at: event.timestamp,
             }
           : pendingReq;
@@ -450,7 +450,7 @@ export function applyEvent(
         pendingReq && pendingReq.status === "pending"
           ? {
               ...pendingReq,
-              status: (pendingReq.kind === "approval" ? "declined" : "cancelled") as const,
+              status: (pendingReq.kind === "approval" ? "declined" : "cancelled") as PendingRequestStatus,
               resolved_at: event.timestamp,
             }
           : pendingReq;

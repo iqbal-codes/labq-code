@@ -790,7 +790,7 @@ export class OrchestratorEngine {
     return structuredClone(list);
   }
 
-  sync(cursor: number): SyncResult {
+  sync(cursor: number, filter?: { environment_id?: string; project_id?: string; thread_id?: string }): SyncResult {
     if (cursor === this.snapshot.sequence) {
       return { ok: true, mode: "up_to_date", sequence: cursor };
     }
@@ -799,11 +799,33 @@ export class OrchestratorEngine {
         ok: true,
         mode: "snapshot",
         sequence: this.snapshot.sequence,
-        snapshot: this.getSnapshot(),
+        snapshot: this.getScopedSnapshot(filter),
         reason: "invalid_cursor",
       };
     }
-    const replayEvents = this.events.filter((e) => e.sequence > cursor);
+    let replayEvents = this.events.filter((e) => e.sequence > cursor);
+    if (filter && (filter.project_id || filter.thread_id)) {
+      replayEvents = replayEvents.filter((e) => {
+        const scoping = this.getEventScoping(e);
+        let eventProjectId = scoping.project_id;
+        const eventThreadId = scoping.thread_id;
+
+        if (!eventProjectId && eventThreadId) {
+          const th = this.snapshot.threads[eventThreadId];
+          if (th) {
+            eventProjectId = th.project_id;
+          }
+        }
+
+        if (filter.project_id !== undefined && eventProjectId !== filter.project_id) {
+          return false;
+        }
+        if (filter.thread_id !== undefined && eventThreadId !== filter.thread_id) {
+          return false;
+        }
+        return true;
+      });
+    }
     return {
       ok: true,
       mode: "replay",
