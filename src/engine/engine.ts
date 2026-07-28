@@ -532,10 +532,11 @@ export class OrchestratorEngine {
         ];
       }
       case "approval_requested": {
+        const resolvedThreadId = this.resolveTurnThreadId(turnId, command);
         const request = {
           id: providerEvent.request_id,
           turn_id: turnId,
-          thread_id: command.kind === "start_turn" ? command.thread_id : "",
+          thread_id: resolvedThreadId,
           kind: "approval" as const,
           operation: providerEvent.operation,
           description: providerEvent.description,
@@ -556,10 +557,11 @@ export class OrchestratorEngine {
         ];
       }
       case "input_requested": {
+        const resolvedThreadId = this.resolveTurnThreadId(turnId, command);
         const request = {
           id: providerEvent.request_id,
           turn_id: turnId,
-          thread_id: command.kind === "start_turn" ? command.thread_id : "",
+          thread_id: resolvedThreadId,
           kind: "input" as const,
           operation: providerEvent.operation,
           description: providerEvent.description,
@@ -603,6 +605,18 @@ export class OrchestratorEngine {
       kind: draft.kind,
       data: draft.data,
     } as DomainEvent;
+  }
+
+  /**
+   * Resolve the thread_id for a turn, preferring the snapshot's authoritative
+   * data over a command's thread_id to handle non-start_turn normalization paths.
+   */
+  private resolveTurnThreadId(turnId: string, command: Command): string {
+    const turn = this.snapshot.turns[turnId];
+    if (turn) return turn.thread_id;
+    // Fallback: extract from the start_turn command if available
+    if (command.kind === "start_turn") return command.thread_id;
+    return "";
   }
 
   /**

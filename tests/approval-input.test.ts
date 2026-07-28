@@ -552,6 +552,99 @@ describe("Approval and Structured-Input Pauses", () => {
     }
   });
 
+  test("response with wrong value type for number field is rejected", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "labq-approval-test-"));
+    const providerService = new ProviderService();
+    providerService.registerAdapter(
+      "pi",
+      new BlockingTestProviderAdapter(
+        [
+          normalizeTurnStarted(),
+          normalizeInputRequested(
+            "req-type",
+            "configure",
+            [
+              { id: "count", type: "number", label: "Parallel count", required: true },
+            ]
+          ),
+        ],
+        []
+      )
+    );
+    const engine = new OrchestratorEngine(undefined, providerService);
+    await createScope(engine, dir, "proj-type", "th-type");
+
+    await engine.dispatchCommand({
+      kind: "start_turn",
+      command_id: "cmd-type",
+      thread_id: "th-type",
+      turn_id: "turn-type",
+      content: { text: "Configure" },
+    });
+
+    await waitForPausedTurn(engine, "turn-type");
+
+    // Send string instead of number
+    const badTypeRes = await engine.dispatchCommand({
+      kind: "respond_input",
+      command_id: "cmd-type-resp",
+      turn_id: "turn-type",
+      thread_id: "th-type",
+      request_id: "req-type",
+      values: { count: "four" },
+    });
+    expect(badTypeRes.ok).toBe(false);
+    if (!badTypeRes.ok) {
+      expect(badTypeRes.code).toBe("invalid_field_type");
+    }
+  });
+
+  test("response with invalid select option is rejected", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "labq-approval-test-"));
+    const providerService = new ProviderService();
+    providerService.registerAdapter(
+      "pi",
+      new BlockingTestProviderAdapter(
+        [
+          normalizeTurnStarted(),
+          normalizeInputRequested(
+            "req-select",
+            "choose_target",
+            [
+              { id: "target", type: "select", label: "Build target", required: true, options: [{ value: "prod", label: "Production" }, { value: "dev", label: "Development" }] },
+            ]
+          ),
+        ],
+        []
+      )
+    );
+    const engine = new OrchestratorEngine(undefined, providerService);
+    await createScope(engine, dir, "proj-select", "th-select");
+
+    await engine.dispatchCommand({
+      kind: "start_turn",
+      command_id: "cmd-select",
+      thread_id: "th-select",
+      turn_id: "turn-select",
+      content: { text: "Choose target" },
+    });
+
+    await waitForPausedTurn(engine, "turn-select");
+
+    const badOptionRes = await engine.dispatchCommand({
+      kind: "respond_input",
+      command_id: "cmd-select-resp",
+      turn_id: "turn-select",
+      thread_id: "th-select",
+      request_id: "req-select",
+      values: { target: "staging" }, // not in valid options
+    });
+    expect(badOptionRes.ok).toBe(false);
+    if (!badOptionRes.ok) {
+      expect(badOptionRes.code).toBe("invalid_field_option");
+    }
+  });
+
   /* ───────── Response Correlation Tests ───────── */
 
   test("response correlation: matching turn_id, thread_id, and request_id", async () => {
