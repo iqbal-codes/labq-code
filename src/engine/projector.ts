@@ -70,7 +70,10 @@ export function applyEvent(
     }
     case "ThreadCreated": {
       const th = event.data.thread;
-      next.threads[th.id] = structuredClone(th);
+      next.threads[th.id] = structuredClone({
+        ...th,
+        session_status: th.session_status || "ready",
+      });
       break;
     }
     case "ThreadArchived": {
@@ -115,6 +118,14 @@ export function applyEvent(
     case "TurnStarted": {
       const turn = next.turns[event.data.turn_id];
       if (turn) {
+        const thread = next.threads[turn.thread_id];
+        if (thread && thread.session_status !== "stopped") {
+          next.threads[thread.id] = {
+            ...thread,
+            session_status: "running",
+            updated_at: event.timestamp,
+          };
+        }
         next.turns[turn.id] = structuredClone({
           ...turn,
           status: "running",
@@ -266,6 +277,14 @@ export function applyEvent(
     case "TurnCompleted": {
       const turn = next.turns[event.data.turn_id];
       if (!turn) break;
+      const thread = next.threads[turn.thread_id];
+      if (thread && thread.session_status !== "stopped") {
+        next.threads[thread.id] = {
+          ...thread,
+          session_status: "ready",
+          updated_at: event.timestamp,
+        };
+      }
       next.turns[turn.id] = structuredClone({
         ...turn,
         status: "completed",
@@ -276,6 +295,14 @@ export function applyEvent(
     case "TurnFailed": {
       const turn = next.turns[event.data.turn_id];
       if (!turn) break;
+      const thread = next.threads[turn.thread_id];
+      if (thread && thread.session_status !== "stopped") {
+        next.threads[thread.id] = {
+          ...thread,
+          session_status: "ready",
+          updated_at: event.timestamp,
+        };
+      }
       // Mark all in-progress activities as failed
       const activities = { ...turn.activities };
       const failedActivityIds = new Set<string>();
@@ -290,6 +317,17 @@ export function applyEvent(
           failedActivityIds.add(id);
         }
       }
+      // Finalize unresolved pending request if present
+      const pendingReq = turn.pending_request;
+      const finalizedReq =
+        pendingReq && pendingReq.status === "pending"
+          ? {
+              ...pendingReq,
+              status: (pendingReq.kind === "approval" ? "declined" : "cancelled") as const,
+              resolved_at: event.timestamp,
+            }
+          : pendingReq;
+
       // Update tool_use parts to reflect failed status and mark message complete
       let assistantMessage = turn.assistant_message
         ? { ...turn.assistant_message, is_complete: true }
@@ -310,6 +348,7 @@ export function applyEvent(
         updated_at: event.timestamp,
         error: event.data.error,
         activities,
+        pending_request: finalizedReq,
         assistant_message: assistantMessage || turn.assistant_message,
       });
       break;
@@ -317,6 +356,14 @@ export function applyEvent(
     case "TurnInterrupted": {
       const turn = next.turns[event.data.turn_id];
       if (!turn) break;
+      const thread = next.threads[turn.thread_id];
+      if (thread && thread.session_status !== "stopped") {
+        next.threads[thread.id] = {
+          ...thread,
+          session_status: "ready",
+          updated_at: event.timestamp,
+        };
+      }
       // Mark all in-progress activities as interrupted
       const activities = { ...turn.activities };
       const interruptedActivityIds = new Set<string>();
@@ -330,6 +377,17 @@ export function applyEvent(
           interruptedActivityIds.add(id);
         }
       }
+      // Finalize unresolved pending request if present
+      const pendingReq = turn.pending_request;
+      const finalizedReq =
+        pendingReq && pendingReq.status === "pending"
+          ? {
+              ...pendingReq,
+              status: (pendingReq.kind === "approval" ? "declined" : "cancelled") as const,
+              resolved_at: event.timestamp,
+            }
+          : pendingReq;
+
       // Mark assistant message as complete (interrupted delivery)
       // and update tool_use parts to reflect interrupted status
       let assistantMessage = turn.assistant_message
@@ -350,6 +408,7 @@ export function applyEvent(
         status: "interrupted",
         updated_at: event.timestamp,
         activities,
+        pending_request: finalizedReq,
         assistant_message: assistantMessage || turn.assistant_message,
       });
       break;
@@ -386,6 +445,17 @@ export function applyEvent(
           resolved_at: event.timestamp,
         },
       });
+      break;
+    }
+    case "SessionStopped": {
+      const th = next.threads[event.data.thread_id];
+      if (th) {
+        next.threads[th.id] = structuredClone({
+          ...th,
+          session_status: "stopped",
+          updated_at: event.timestamp,
+        });
+      }
       break;
     }
   }

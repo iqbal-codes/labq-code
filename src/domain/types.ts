@@ -47,11 +47,14 @@ export type RuntimeAccessProfile =
 
 export type InteractionMode = "execute" | "plan";
 
+export type SessionStatus = "none" | "ready" | "running" | "stopped";
+
 export interface Thread {
   id: string;
   project_id: string;
   title: string;
   status: LifecycleStatus;
+  session_status: SessionStatus;
   model: PiModelId;
   access_profile: RuntimeAccessProfile;
   interaction_mode: InteractionMode;
@@ -154,7 +157,7 @@ export interface InputField {
 }
 
 export type PendingRequestKind = "approval" | "input";
-export type PendingRequestStatus = "pending" | "approved" | "declined" | "answered";
+export type PendingRequestStatus = "pending" | "approved" | "declined" | "answered" | "cancelled";
 
 export interface PendingRequest {
   id: string;
@@ -222,7 +225,7 @@ export type Command =
   | ({ kind: "delete_thread"; thread_id: string } & CommandMeta)
   | ({ kind: "start_turn"; thread_id: string; content: UserMessageContent; turn_id?: string } & CommandMeta)
   | ({ kind: "interrupt_turn"; turn_id: string; thread_id: string } & CommandMeta)
-  | ({ kind: "stop_turn"; turn_id: string; thread_id: string } & CommandMeta)
+  | ({ kind: "stop_turn"; thread_id: string; turn_id?: string } & CommandMeta)
   | ({ kind: "respond_approval"; turn_id: string; thread_id: string; request_id: string; decision: "approved" | "declined" } & CommandMeta)
   | ({ kind: "respond_input"; turn_id: string; thread_id: string; request_id: string; values: Record<string, string | number | boolean> } & CommandMeta);
 
@@ -259,7 +262,8 @@ export type DomainEvent =
   | ({ kind: "TurnInterrupted"; data: { turn_id: string } } & DomainEventMeta)
   | ({ kind: "ApprovalRequested"; data: { turn_id: string; request: PendingRequest } } & DomainEventMeta)
   | ({ kind: "InputRequested"; data: { turn_id: string; request: PendingRequest } } & DomainEventMeta)
-  | ({ kind: "PendingRequestResolved"; data: { turn_id: string; request_id: string; response: PendingRequestResponse } } & DomainEventMeta);
+  | ({ kind: "PendingRequestResolved"; data: { turn_id: string; request_id: string; response: PendingRequestResponse } } & DomainEventMeta)
+  | ({ kind: "SessionStopped"; data: { thread_id: string } } & DomainEventMeta);
 
 // Command Results & Receipts
 export type CommandSuccess = {
@@ -267,7 +271,7 @@ export type CommandSuccess = {
   project_id?: string;
   thread_id?: string;
   turn_id?: string;
-  status?: LifecycleStatus | TurnStatus;
+  status?: LifecycleStatus | TurnStatus | SessionStatus;
   duplicate?: boolean;
 };
 

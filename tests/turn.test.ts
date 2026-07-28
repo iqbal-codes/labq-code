@@ -407,7 +407,7 @@ describe("Turn Orchestration", () => {
       thread_id: "th-stop",
     });
     expect(stopRes.ok).toBe(true);
-    if (stopRes.ok) expect(stopRes.status).toBe("interrupted");
+    if (stopRes.ok) expect(stopRes.status).toBe("stopped");
 
     // TurnInterrupted event recorded
     const events = engine.getEvents();

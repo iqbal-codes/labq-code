@@ -9,7 +9,7 @@ import type {
   Turn,
   SyncResult,
 } from "../domain/types.js";
-import type { CanonicalProviderEvent, StartTurnParams } from "./provider-adapter.js";
+import { sanitizeErrorMetadata, type CanonicalProviderEvent, type StartTurnParams } from "./provider-adapter.js";
 import { SourceManager } from "../source/source-manager.js";
 import { decideCommand } from "./decider.js";
 import { applyEvent, createInitialSnapshot, rebuildSnapshot } from "./projector.js";
@@ -203,21 +203,35 @@ export class OrchestratorEngine {
 
     // 6. If this was interrupt_turn or stop_turn, signal the provider
     if (command.kind === "interrupt_turn" || command.kind === "stop_turn") {
-      const active = this.activeTurns.get(command.turn_id);
+      const turnId = command.turn_id;
+      const active = turnId
+        ? this.activeTurns.get(turnId)
+        : Array.from(this.activeTurns.values()).find((a) => a.thread_id === command.thread_id);
       if (active) {
         if (command.kind === "stop_turn") {
-          this.providerService.stopTurn(active.providerName, {
-            turn_id: command.turn_id,
-            thread_id: command.thread_id,
-          }).catch(() => {});
+          this.providerService
+            .stopTurn(active.providerName, {
+              turn_id: active.turn_id,
+              thread_id: command.thread_id,
+            })
+            .catch(() => {});
         } else {
-          this.providerService.interruptTurn(active.providerName, {
-            turn_id: command.turn_id,
-            thread_id: command.thread_id,
-          }).catch(() => {});
+          this.providerService
+            .interruptTurn(active.providerName, {
+              turn_id: active.turn_id,
+              thread_id: command.thread_id,
+            })
+            .catch(() => {});
         }
         active.abortController.abort();
-        this.activeTurns.delete(command.turn_id);
+        this.activeTurns.delete(active.turn_id);
+      } else if (command.kind === "stop_turn") {
+        this.providerService
+          .stopTurn("pi", {
+            turn_id: command.turn_id || "",
+            thread_id: command.thread_id,
+          })
+          .catch(() => {});
       }
     }
 
@@ -372,16 +386,20 @@ export class OrchestratorEngine {
       }
     } catch (err: unknown) {
       // Only record failure if the turn wasn't explicitly interrupted/stopped
-      if (this.snapshot.turns[turnId]?.status === "queued" || this.snapshot.turns[turnId]?.status === "running") {
+      const currentTurn = this.snapshot.turns[turnId];
+      if (
+        currentTurn &&
+        (currentTurn.status === "queued" ||
+          currentTurn.status === "running" ||
+          currentTurn.status === "paused")
+      ) {
+        const errorMeta = sanitizeErrorMetadata(err);
         const failEvent = this.makeDomainEvent(
           {
             kind: "TurnFailed",
             data: {
               turn_id: turnId,
-              error: {
-                code: "provider_error",
-                detail: err instanceof Error ? err.message : String(err),
-              },
+              error: errorMeta,
             },
           },
           turnId,
@@ -670,6 +688,7 @@ export class OrchestratorEngine {
       case "ThreadArchived":
       case "ThreadSettled":
       case "ThreadDeleted":
+      case "SessionStopped":
         return { thread_id: event.data.thread_id };
       case "TurnQueued":
         return { thread_id: event.data.turn.thread_id };

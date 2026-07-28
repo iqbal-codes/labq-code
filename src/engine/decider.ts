@@ -29,7 +29,8 @@ export type EventDraft =
   | { kind: "ThreadDeleted"; data: { thread_id: string } }
   | { kind: "TurnQueued"; data: { turn: Turn } }
   | { kind: "TurnInterrupted"; data: { turn_id: string } }
-  | { kind: "PendingRequestResolved"; data: { turn_id: string; request_id: string; response: PendingRequestResponse } };
+  | { kind: "PendingRequestResolved"; data: { turn_id: string; request_id: string; response: PendingRequestResponse } }
+  | { kind: "SessionStopped"; data: { thread_id: string } };
 
 export type DeciderResult =
   | { ok: true; events: EventDraft[]; resultData: Record<string, unknown> }
@@ -295,13 +296,13 @@ export function decideCommand(
         project_id: command.project_id,
         title: command.title || "New Thread",
         status: "active",
+        session_status: "ready",
         model: command.model,
         access_profile: command.access_profile,
         interaction_mode: command.interaction_mode,
         created_at: nowIso,
         updated_at: nowIso,
       };
-
       return {
         ok: true,
         events: [{ kind: "ThreadCreated", data: { thread } }],
@@ -395,6 +396,14 @@ export function decideCommand(
         };
       }
 
+      if (thread.session_status === "stopped") {
+        return {
+          ok: false,
+          code: "session_stopped",
+          detail: `Thread '${command.thread_id}' session is stopped and cannot accept new turns. A new session is required.`,
+        };
+      }
+
       // One queued/running/paused turn allowed per thread
       const existingTurn = Object.values(snapshot.turns).find(
         (t) =>
@@ -450,6 +459,15 @@ export function decideCommand(
     }
 
     case "interrupt_turn": {
+      const thread = snapshot.threads[command.thread_id];
+      if (thread && thread.status === "deleted") {
+        return {
+          ok: false,
+          code: "invalid_thread_state",
+          detail: `Cannot interrupt turn in thread with status '${thread.status}'.`,
+        };
+      }
+
       const turn = snapshot.turns[command.turn_id];
       if (!turn) {
         return {
@@ -465,11 +483,18 @@ export function decideCommand(
           detail: `Turn '${command.turn_id}' does not belong to thread '${command.thread_id}'.`,
         };
       }
-      if (turn.status !== "running" && turn.status !== "paused") {
+      if (turn.status === "interrupted") {
+        return {
+          ok: true,
+          events: [],
+          resultData: { turn_id: turn.id, status: "interrupted" },
+        };
+      }
+      if (turn.status !== "running" && turn.status !== "paused" && turn.status !== "queued") {
         return {
           ok: false,
           code: "invalid_turn_state",
-          detail: `Cannot interrupt turn in status '${turn.status}'. Must be 'running' or 'paused'.`,
+          detail: `Cannot interrupt turn in status '${turn.status}'. Must be 'queued', 'running', or 'paused'.`,
         };
       }
       return {
@@ -480,33 +505,69 @@ export function decideCommand(
     }
 
     case "stop_turn": {
-      const turn = snapshot.turns[command.turn_id];
-      if (!turn) {
+      const thread = snapshot.threads[command.thread_id];
+      if (!thread) {
         return {
           ok: false,
-          code: "turn_not_found",
-          detail: `Turn '${command.turn_id}' does not exist.`,
+          code: "thread_not_found",
+          detail: `Thread '${command.thread_id}' does not exist.`,
         };
       }
-      if (turn.thread_id !== command.thread_id) {
+      if (thread.status === "deleted") {
         return {
           ok: false,
-          code: "turn_thread_mismatch",
-          detail: `Turn '${command.turn_id}' does not belong to thread '${command.thread_id}'.`,
+          code: "invalid_thread_state",
+          detail: `Cannot stop session in thread with status '${thread.status}'.`,
         };
       }
-      if (turn.status !== "running" && turn.status !== "paused" && turn.status !== "queued") {
+      if (thread.session_status === "stopped") {
         return {
-          ok: false,
-          code: "invalid_turn_state",
-          detail: `Cannot stop turn in status '${turn.status}'. Must be 'queued', 'running', or 'paused'.`,
+          ok: true,
+          events: [],
+          resultData: { thread_id: thread.id, status: "stopped" },
         };
       }
-      // Stop also interrupts (to abort active work and dispose session)
+
+      let turn: Turn | undefined;
+      if (command.turn_id) {
+        turn = snapshot.turns[command.turn_id];
+        if (!turn) {
+          return {
+            ok: false,
+            code: "turn_not_found",
+            detail: `Turn '${command.turn_id}' does not exist.`,
+          };
+        }
+        if (turn.thread_id !== command.thread_id) {
+          return {
+            ok: false,
+            code: "turn_thread_mismatch",
+            detail: `Turn '${command.turn_id}' does not belong to thread '${command.thread_id}'.`,
+          };
+        }
+        if (turn.status === "completed" || turn.status === "failed") {
+          return {
+            ok: false,
+            code: "invalid_turn_state",
+            detail: `Cannot stop turn in status '${turn.status}'. Must be 'queued', 'running', or 'paused'.`,
+          };
+        }
+      } else {
+        turn = Object.values(snapshot.turns).find(
+          (t) =>
+            t.thread_id === command.thread_id &&
+            (t.status === "queued" || t.status === "running" || t.status === "paused")
+        );
+      }
+      const events: EventDraft[] = [];
+      if (turn && (turn.status === "running" || turn.status === "paused" || turn.status === "queued")) {
+        events.push({ kind: "TurnInterrupted", data: { turn_id: turn.id } });
+      }
+      events.push({ kind: "SessionStopped", data: { thread_id: thread.id } });
       return {
         ok: true,
-        events: [{ kind: "TurnInterrupted", data: { turn_id: turn.id } }],
-        resultData: { turn_id: turn.id, status: "interrupted" },
+        events,
+        resultData: { thread_id: thread.id, status: "stopped" },
       };
     }
 

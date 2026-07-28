@@ -119,3 +119,60 @@ export function resolveWorkspacePath(
   if (!project) return undefined;
   return project.source?.workspace_path;
 }
+export interface PersistedSessionMetadata {
+  session_id: string;
+  provider_name: string;
+  project_workspace_path: string;
+  model: PiModelId;
+  access_profile: RuntimeAccessProfile;
+  session_status?: string;
+}
+
+export interface ResumeMatchParams {
+  session_id: string;
+  provider_name: string;
+  project_workspace_path: string;
+  model: PiModelId;
+  access_profile: RuntimeAccessProfile;
+}
+
+export type ExplicitResumeResult =
+  | { can_resume: true; reason: "matching_persisted_session" }
+  | { can_resume: false; reason: "session_stopped" | "provider_mismatch" | "workspace_mismatch" | "model_mismatch" | "access_profile_mismatch" | "session_id_mismatch" };
+
+/**
+ * Evaluates whether explicit resume is offered for a persisted provider session.
+ * Explicit resume is offered ONLY when persisted session identity, project workspace,
+ * provider instance, model, and runtime profile match, and the session is NOT stopped.
+ */
+export function canResumeSession(
+  persisted: PersistedSessionMetadata,
+  params: ResumeMatchParams
+): boolean {
+  return evaluateExplicitResume(persisted, params).can_resume;
+}
+
+export function evaluateExplicitResume(
+  persisted: PersistedSessionMetadata,
+  params: ResumeMatchParams
+): ExplicitResumeResult {
+  if (persisted.session_status === "stopped") {
+    return { can_resume: false, reason: "session_stopped" };
+  }
+  if (persisted.session_id !== params.session_id) {
+    return { can_resume: false, reason: "session_id_mismatch" };
+  }
+  if (persisted.provider_name !== params.provider_name) {
+    return { can_resume: false, reason: "provider_mismatch" };
+  }
+  if (persisted.project_workspace_path !== params.project_workspace_path) {
+    return { can_resume: false, reason: "workspace_mismatch" };
+  }
+  if (persisted.model !== params.model) {
+    return { can_resume: false, reason: "model_mismatch" };
+  }
+  if (persisted.access_profile !== params.access_profile) {
+    return { can_resume: false, reason: "access_profile_mismatch" };
+  }
+  return { can_resume: true, reason: "matching_persisted_session" };
+}

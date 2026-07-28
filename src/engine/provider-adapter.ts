@@ -97,3 +97,24 @@ export interface ProviderAdapter {
    */
   stopTurn(params: StopTurnParams): Promise<void>;
 }
+/**
+ * Sanitize raw provider or runtime errors into provider-neutral error metadata.
+ * Ensures raw internal payloads, paths, or secrets never enter client snapshots/events.
+ */
+export function sanitizeErrorMetadata(err: unknown): { code: string; detail: string } {
+  if (typeof err === "object" && err !== null && "code" in err && "detail" in err) {
+    const code = String((err as { code: unknown }).code || "provider_error");
+    const detail = String((err as { detail: unknown }).detail || "An unexpected provider error occurred.");
+    return { code, detail };
+  }
+  if (err instanceof Error) {
+    return {
+      code: "provider_error",
+      detail: err.message || "An unexpected error occurred during provider execution.",
+    };
+  }
+  return {
+    code: "provider_error",
+    detail: typeof err === "string" ? err : "An unexpected error occurred during provider execution.",
+  };
+}
