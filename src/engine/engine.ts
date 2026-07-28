@@ -17,6 +17,8 @@ import { applyEvent, createInitialSnapshot, rebuildSnapshot } from "./projector.
 import { DEFAULT_PI_CATALOG } from "../catalog/pi-catalog.js";
 import { ProviderService, resolveWorkspacePath } from "./provider-service.js";
 import { PiAdapter } from "./pi-adapter.js";
+import type { StorageAdapter } from "./storage-adapter.js";
+import { InMemoryStorageAdapter } from "./storage-adapter.js";
 
 interface ListenerEntry {
   listener: (event: DomainEvent) => void;
@@ -44,8 +46,9 @@ export class OrchestratorEngine {
   private dispatchQueue: Promise<unknown> = Promise.resolve();
   private providerService: ProviderService;
   private activeTurns: Map<string, ActiveTurnStream> = new Map();
+  private storageAdapter: StorageAdapter;
 
-  constructor(sourceManager?: SourceManager, providerService?: ProviderService) {
+  constructor(sourceManager?: SourceManager, providerService?: ProviderService, storageAdapter?: StorageAdapter) {
     this.sourceManager = sourceManager || new SourceManager();
     const ps = providerService || new ProviderService();
     // Register the default Pi adapter only when no provider service was injected
@@ -53,7 +56,26 @@ export class OrchestratorEngine {
       ps.registerAdapter("pi", new PiAdapter());
     }
     this.providerService = ps;
+    this.storageAdapter = storageAdapter || new InMemoryStorageAdapter();
     this.snapshot = createInitialSnapshot(DEFAULT_PI_CATALOG);
+    // Synchronously recover persisted state from storage (SQLite ops are sync)
+    this.recoverFromStorage();
+  }
+
+  private recoverFromStorage(): void {
+    try {
+      const state = this.storageAdapter.loadAll();
+      if (state.events.length > 0 || state.receipts.size > 0) {
+        this.events = state.events;
+        this.receipts = new Map(state.receipts);
+        this.nextSequence = state.nextSequence;
+        if (this.events.length > 0) {
+          this.snapshot = rebuildSnapshot(this.events, this.snapshot.catalog);
+        }
+      }
+    } catch {
+      // Recovery failure leaves the default empty state
+    }
   }
 
   async dispatchCommand(command: Command): Promise<CommandResult> {
@@ -131,11 +153,7 @@ export class OrchestratorEngine {
           code: sourceRes.code,
           detail: sourceRes.detail,
         };
-        this.receipts.set(command.command_id, {
-          command_id: command.command_id,
-          result: errorResult,
-          sequences: [],
-        });
+        await this.storeErrorReceipt(command.command_id, errorResult);
         return errorResult;
       }
       resolvedSource = sourceRes.source;
@@ -159,15 +177,11 @@ export class OrchestratorEngine {
         code: decision.code,
         detail: decision.detail,
       };
-      this.receipts.set(command.command_id, {
-        command_id: command.command_id,
-        result: errorResult,
-        sequences: [],
-      });
+      await this.storeErrorReceipt(command.command_id, errorResult);
       return errorResult;
     }
 
-    // 3. Construct and append globally sequenced domain events
+    // 3. Construct globally sequenced domain events
     const sequences: number[] = [];
     const newEvents: DomainEvent[] = [];
     let turnId: string | undefined;
@@ -186,8 +200,6 @@ export class OrchestratorEngine {
       } as DomainEvent;
       sequences.push(seq);
       newEvents.push(domainEvent);
-      this.events.push(domainEvent);
-      this.snapshot = applyEvent(this.snapshot, domainEvent);
 
       // Capture turn_id from TurnQueued for streaming kickoff
       if (draft.kind === "TurnQueued") {
@@ -200,23 +212,33 @@ export class OrchestratorEngine {
       ...decision.resultData,
     };
 
-    this.receipts.set(command.command_id, {
+    const receipt: CommandReceipt = {
       command_id: command.command_id,
       result: successResult,
       sequences,
-    });
+    };
 
-    // 4. Notify live subscribers about the command-originated events
+    // 4. Atomically persist events + receipt to storage before mutating in-memory state
+    await this.storageAdapter.persistCommandResult(newEvents, receipt);
+
+    // 5. Update in-memory state
+    for (const event of newEvents) {
+      this.events.push(event);
+      this.snapshot = applyEvent(this.snapshot, event);
+    }
+    this.receipts.set(command.command_id, receipt);
+
+    // 6. Notify live subscribers about the command-originated events
     for (const event of newEvents) {
       this.notifyListeners(event);
     }
 
-    // 5. If this was a start_turn command, kick off async provider streaming
+    // 7. If this was a start_turn command, kick off async provider streaming
     if (command.kind === "start_turn" && turnId) {
       this.startTurnStream(command, turnId);
     }
 
-    // 6. If this was interrupt_turn or stop_turn, signal the provider
+    // 8. If this was interrupt_turn or stop_turn, signal the provider
     if (command.kind === "interrupt_turn" || command.kind === "stop_turn") {
       const turnId = command.turn_id;
       const active = turnId
@@ -250,7 +272,7 @@ export class OrchestratorEngine {
       }
     }
 
-    // 7. If this was respond_approval or respond_input, route the response
+    // 9. If this was respond_approval or respond_input, route the response
     //    back through the provider service to unblock the provider stream
     if (command.kind === "respond_approval" || command.kind === "respond_input") {
       const active = this.activeTurns.get(command.turn_id);
@@ -271,6 +293,20 @@ export class OrchestratorEngine {
     }
 
     return successResult;
+  }
+
+  /**
+   * Persist an error receipt for a failed command and update in-memory state.
+   * DRY helper used by both source-validation and decider-error paths.
+   */
+  private async storeErrorReceipt(commandId: string, result: CommandResult): Promise<void> {
+    const receipt: CommandReceipt = {
+      command_id: commandId,
+      result,
+      sequences: [],
+    };
+    await this.storageAdapter.storeReceipt(receipt);
+    this.receipts.set(commandId, receipt);
   }
 
   /**
@@ -337,7 +373,7 @@ export class OrchestratorEngine {
           if (turn && turn.status === "queued") {
             // Only auto-emit if the provider event isn't itself a start signal
             if (providerEvent.kind !== "provider_turn_started") {
-              this.appendStreamEvent(
+              await this.appendStreamEvent(
                 this.makeDomainEvent(
                   { kind: "TurnStarted", data: { turn_id: turnId } },
                   turnId,
@@ -351,7 +387,7 @@ export class OrchestratorEngine {
 
         const events = this.normalizeProviderEvent(providerEvent, turnId, command);
         for (const event of events) {
-          this.appendStreamEvent(event);
+          await this.appendStreamEvent(event);
         }
 
         // Mark turn as running on first provider event
@@ -397,7 +433,7 @@ export class OrchestratorEngine {
           turnId,
           command
         );
-        this.appendStreamEvent(failEvent);
+        await this.appendStreamEvent(failEvent);
       }
     } catch (err: unknown) {
       // Only record failure if the turn wasn't explicitly interrupted/stopped
@@ -420,7 +456,7 @@ export class OrchestratorEngine {
           turnId,
           command
         );
-        this.appendStreamEvent(failEvent);
+        await this.appendStreamEvent(failEvent);
       }
     } finally {
       this.activeTurns.delete(turnId);
@@ -429,9 +465,10 @@ export class OrchestratorEngine {
 
   /**
    * Append a domain event from the streaming provider turn.
-   * Sequences it, pushes to event log, projects to snapshot, notifies listeners.
+   * Persists to storage, sequences it, pushes to event log, projects to snapshot, notifies listeners.
    */
-  private appendStreamEvent(event: DomainEvent): void {
+  private async appendStreamEvent(event: DomainEvent): Promise<void> {
+    await this.storageAdapter.appendEvents([event]);
     this.events.push(event);
     this.snapshot = applyEvent(this.snapshot, event);
     this.notifyListeners(event);
