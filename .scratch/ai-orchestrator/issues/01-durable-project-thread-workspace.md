@@ -4,12 +4,12 @@
 
 **Blocked by:** None — can start immediately
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Project and thread commands accept the curated Pi model, fixed runtime access profile, and canonical interaction mode; Pi advertises only `execute`, and a fresh query exposes those choices in durable state.
-- [ ] Project source commands validate local binding and managed Git URL acquisition, clean managed cancellation artifacts, and never create a partial project on failure.
-- [ ] Multiple projects and threads have independent aggregate identity, scoped queries, lifecycle state, and subscriptions; delete creates a durable tombstone without deleting a user-owned local folder.
-- [ ] Valid commands append immutable, globally ordered events with command identity and correlation metadata; malformed or impossible transitions are rejected without changing state.
-- [ ] Repeating a command ID returns the original command result and receipt without appending another outcome.
-- [ ] Rebuilding the project and thread snapshot from the event history produces the same result as the live projection.
-- [ ] Deterministic engine tests cover creation, source lifecycle, thread configuration, lifecycle validation, invalid configuration, idempotency, event ordering, tombstones, and projection convergence.
+- [x] Project and thread commands accept the curated Pi model, fixed runtime access profile, and canonical interaction mode; Pi advertises only `execute`, and a fresh query exposes those choices in durable state.
+- [x] Project source commands validate local binding and managed Git URL acquisition, clean managed cancellation artifacts, and never create a partial project on failure.
+- [x] Multiple projects and threads have independent aggregate identity, scoped queries, lifecycle state, and subscriptions; delete creates a durable tombstone without deleting a user-owned local folder.
+- [x] Valid commands append immutable, globally ordered events with command identity and correlation metadata; malformed or impossible transitions are rejected without changing state.
+- [x] Repeating a command ID returns the original command result and receipt without appending another outcome.
+- [x] Rebuilding the project and thread snapshot from the event history produces the same result as the live projection.
+- [x] Deterministic engine tests cover creation, source lifecycle, thread configuration, lifecycle validation, invalid configuration, idempotency, event ordering, tombstones, and projection convergence.
