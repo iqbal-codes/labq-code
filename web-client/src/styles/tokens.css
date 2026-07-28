@@ -1,0 +1,50 @@
+/*
+ * Tactical Telemetry & CRT Terminal design tokens.
+ * Dark rigid compartments, square edges, visible dividers, monospaced operational
+ * data, readable assistant content. No gradients, glass, translucency, rounded
+ * soft cards, or rainbow status treatment. Every state also has a text label.
+ */
+:root {
+  /* Surfaces — near-black, stepped by elevation */
+  --tt-bg-0: #0a0a0a;
+  --tt-bg-1: #121212;
+  --tt-bg-2: #181818;
+  --tt-bg-3: #1f1f1f;
+  --tt-bg-inset: #060606;
+
+  /* Borders / dividers */
+  --tt-border: #2a2a2a;
+  --tt-border-strong: #3a3a3a;
+  --tt-divider: #222222;
+
+  /* Foreground */
+  --tt-fg: #d8d8d8;
+  --tt-fg-dim: #8a8a8a;
+  --tt-fg-faint: #5a5a5a;
+  --tt-fg-on-accent: #04121a;
+
+  /* Telemetry accent (monospaced operational data) */
+  --tt-accent: #36c5f0;
+  --tt-accent-dim: #1d6f8a;
+
+  /* Status — text-first, color is reinforcement only */
+  --tt-sync: #3fb950; /* synchronized / healthy */
+  --tt-hazard: #ff4d4d; /* error / setup-required / unauthorized / destructive */
+  --tt-warn: #e3b341; /* paused / pending attention */
+  --tt-idle: #6b6b6b; /* neutral / inactive */
+
+  /* Typography */
+  --tt-font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --tt-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Layout */
+  --tt-radius: 0px; /* square edges */
+  --tt-space-1: 4px;
+  --tt-space-2: 8px;
+  --tt-space-3: 12px;
+  --tt-space-4: 16px;
+  --tt-space-5: 24px;
+  --tt-space-6: 32px;
+
+  --tt-focus-ring: 0 0 0 2px var(--tt-bg-0), 0 0 0 4px var(--tt-accent);
+}
