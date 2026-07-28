@@ -81,10 +81,77 @@ export interface InteractionModeDefinition {
   description: string;
 }
 
+export type CapabilityKind = "plan_mode" | "diff" | "checkpoint" | "rollback";
+
+export interface ProviderCapability {
+  kind: CapabilityKind;
+  supported: boolean;
+  read_only: boolean;
+  description: string;
+}
+
+export interface ProviderCapabilities {
+  provider_name: string;
+  capabilities: Record<CapabilityKind, ProviderCapability>;
+}
+
 export interface CuratedPiCatalog {
   models: CuratedModel[];
   access_profiles: AccessProfileDefinition[];
   interaction_modes: InteractionModeDefinition[];
+  capabilities: ProviderCapability[];
+}
+
+export type FileChangeKind = "created" | "modified" | "deleted";
+
+export interface FileChangeSummary {
+  path: string;
+  kind: FileChangeKind;
+  additions: number;
+  deletions: number;
+  diff_hunk?: string;
+}
+
+export interface ChangeSummary {
+  turn_id: string;
+  files: FileChangeSummary[];
+  total_additions: number;
+  total_deletions: number;
+  created_at: string;
+}
+
+export const MAX_SUMMARY_FILES = 50;
+export const MAX_DIFF_HUNK_BYTES = 4 * 1024; // 4 KiB max per diff hunk
+
+export function boundChangeSummary(summary: ChangeSummary): ChangeSummary {
+  const boundedFiles = summary.files.slice(0, MAX_SUMMARY_FILES).map((f) => {
+    if (!f.diff_hunk || f.diff_hunk.length <= MAX_DIFF_HUNK_BYTES) {
+      return f;
+    }
+    return {
+      ...f,
+      diff_hunk: f.diff_hunk.slice(0, MAX_DIFF_HUNK_BYTES) + "\n... [diff hunk truncated]",
+    };
+  });
+
+  const total_additions = boundedFiles.reduce((sum, f) => sum + f.additions, 0);
+  const total_deletions = boundedFiles.reduce((sum, f) => sum + f.deletions, 0);
+
+  return {
+    ...summary,
+    files: boundedFiles,
+    total_additions,
+    total_deletions,
+  };
+}
+
+export interface TurnReviewState {
+  turn_id: string;
+  read_only: true;
+  supports_checkpoint: false;
+  supports_rollback: false;
+  change_summary?: ChangeSummary;
+  unsupported_operations: CapabilityKind[];
 }
 
 // Turn types
@@ -133,6 +200,7 @@ export interface Turn {
   assistant_message?: AssistantMessage;
   activities: Record<string, ToolActivity>;
   pending_request?: PendingRequest;
+  change_summary?: ChangeSummary;
   created_at: string;
   updated_at: string;
   error?: { code: string; detail: string };
@@ -263,8 +331,8 @@ export type DomainEvent =
   | ({ kind: "ApprovalRequested"; data: { turn_id: string; request: PendingRequest } } & DomainEventMeta)
   | ({ kind: "InputRequested"; data: { turn_id: string; request: PendingRequest } } & DomainEventMeta)
   | ({ kind: "PendingRequestResolved"; data: { turn_id: string; request_id: string; response: PendingRequestResponse } } & DomainEventMeta)
-  | ({ kind: "SessionStopped"; data: { thread_id: string } } & DomainEventMeta);
-
+  | ({ kind: "SessionStopped"; data: { thread_id: string } } & DomainEventMeta)
+  | ({ kind: "ChangeSummaryEmitted"; data: { turn_id: string; summary: ChangeSummary } } & DomainEventMeta);
 // Command Results & Receipts
 export type CommandSuccess = {
   ok: true;

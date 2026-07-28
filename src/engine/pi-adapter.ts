@@ -6,8 +6,8 @@ import type {
   RespondToRequestParams,
   ProviderAdapter,
 } from "./provider-adapter.js";
-import type { ToolActivityStatus, RuntimeAccessProfile, InputField } from "../domain/types.js";
-import { validateImageAttachments } from "../domain/types.js";
+import type { ToolActivityStatus, RuntimeAccessProfile, InputField, ChangeSummary } from "../domain/types.js";
+import { validateImageAttachments, boundChangeSummary } from "../domain/types.js";
 
 /**
  * Normalize a Pi SDK assistant text delta into a canonical provider event.
@@ -99,6 +99,15 @@ export function normalizeInputRequested(
   description?: string
 ): CanonicalProviderEvent {
   return { kind: "input_requested", request_id: requestId, operation, description, fields };
+}
+
+/**
+ * Normalize a Pi SDK change summary into a canonical provider event.
+ */
+export function normalizeChangeSummary(
+  summary: ChangeSummary
+): CanonicalProviderEvent {
+  return { kind: "change_summary", turn_id: summary.turn_id, summary: boundChangeSummary(summary) };
 }
 
 /**

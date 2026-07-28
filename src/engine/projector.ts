@@ -1,5 +1,65 @@
-import type { Snapshot, DomainEvent, CuratedPiCatalog, Turn, ToolActivityStatus } from "../domain/types.js";
+import type { Snapshot, DomainEvent, CuratedPiCatalog, Turn, ToolActivityStatus, ChangeSummary, FileChangeSummary, ToolActivity } from "../domain/types.js";
+import { boundChangeSummary } from "../domain/types.js";
 import { DEFAULT_PI_CATALOG } from "../catalog/pi-catalog.js";
+
+export function deriveChangeSummaryFromToolActivities(
+  turnId: string,
+  activities: Record<string, ToolActivity>,
+  timestamp: string
+): ChangeSummary | undefined {
+  const filesMap = new Map<string, FileChangeSummary>();
+
+  for (const act of Object.values(activities)) {
+    if (act.status !== "success") continue;
+
+    const toolName = act.tool.toLowerCase();
+    if (toolName !== "edit" && toolName !== "write" && toolName !== "create_file") continue;
+
+    const input = (act.input ?? {}) as Record<string, unknown>;
+    const filePath = (input.path ?? input.file_path ?? input.file ?? "unknown") as string;
+    if (!filePath || filePath === "unknown") continue;
+
+    const existing = filesMap.get(filePath);
+
+    if (toolName === "write" || toolName === "create_file") {
+      const content = String(input.content ?? act.output ?? "");
+      const lines = content.split("\n").length;
+      filesMap.set(filePath, {
+        path: filePath,
+        kind: existing ? "modified" : "created",
+        additions: (existing?.additions ?? 0) + lines,
+        deletions: existing?.deletions ?? 0,
+        diff_hunk: `+ ${lines} lines written to ${filePath}`,
+      });
+    } else if (toolName === "edit") {
+      const diff = String(input.diff ?? input.patch ?? act.output ?? "");
+      const addedLines = (diff.match(/^\+[^+]/gm) || []).length || 1;
+      const deletedLines = (diff.match(/^-[^-]/gm) || []).length || 0;
+
+      filesMap.set(filePath, {
+        path: filePath,
+        kind: "modified",
+        additions: (existing?.additions ?? 0) + addedLines,
+        deletions: (existing?.deletions ?? 0) + deletedLines,
+        diff_hunk: diff.length > 0 ? diff : undefined,
+      });
+    }
+  }
+
+  const files = Array.from(filesMap.values());
+  if (files.length === 0) return undefined;
+
+  const total_additions = files.reduce((sum, f) => sum + f.additions, 0);
+  const total_deletions = files.reduce((sum, f) => sum + f.deletions, 0);
+
+  return boundChangeSummary({
+    turn_id: turnId,
+    files,
+    total_additions,
+    total_deletions,
+    created_at: timestamp,
+  });
+}
 
 export function createInitialSnapshot(
   catalog: CuratedPiCatalog = DEFAULT_PI_CATALOG
@@ -237,12 +297,16 @@ export function applyEvent(
         );
         msg = { ...msg, parts };
       }
+      const updatedActivities = {
+        ...turn.activities,
+        [event.data.activity_id]: completedActivity,
+      };
+      const derivedSummary = deriveChangeSummaryFromToolActivities(turn.id, updatedActivities, now);
+      const finalSummary = derivedSummary ?? turn.change_summary;
       next.turns[turn.id] = structuredClone({
         ...turn,
-        activities: {
-          ...turn.activities,
-          [event.data.activity_id]: completedActivity,
-        },
+        activities: updatedActivities,
+        change_summary: finalSummary,
         assistant_message: msg,
       });
       break;
@@ -285,9 +349,12 @@ export function applyEvent(
           updated_at: event.timestamp,
         };
       }
+      const derivedSummary = deriveChangeSummaryFromToolActivities(turn.id, turn.activities, event.timestamp);
+      const finalSummary = derivedSummary ?? turn.change_summary;
       next.turns[turn.id] = structuredClone({
         ...turn,
         status: "completed",
+        change_summary: finalSummary,
         updated_at: event.timestamp,
       });
       break;
@@ -456,6 +523,16 @@ export function applyEvent(
           updated_at: event.timestamp,
         });
       }
+      break;
+    }
+    case "ChangeSummaryEmitted": {
+      const turn = next.turns[event.data.turn_id];
+      if (!turn) break;
+      next.turns[turn.id] = structuredClone({
+        ...turn,
+        change_summary: boundChangeSummary(event.data.summary),
+        updated_at: event.timestamp,
+      });
       break;
     }
   }
