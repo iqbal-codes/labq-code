@@ -1,4 +1,4 @@
-import {
+import type {
   Command,
   DomainEvent,
   CommandReceipt,
@@ -6,16 +6,30 @@ import {
   Snapshot,
   Project,
   Thread,
+  Turn,
   SyncResult,
 } from "../domain/types.js";
+import type { CanonicalProviderEvent, StartTurnParams } from "./provider-adapter.js";
 import { SourceManager } from "../source/source-manager.js";
 import { decideCommand } from "./decider.js";
 import { applyEvent, createInitialSnapshot, rebuildSnapshot } from "./projector.js";
 import { DEFAULT_PI_CATALOG } from "../catalog/pi-catalog.js";
+import { ProviderService, resolveWorkspacePath } from "./provider-service.js";
+import { PiAdapter } from "./pi-adapter.js";
 
 interface ListenerEntry {
   listener: (event: DomainEvent) => void;
   filter?: { project_id?: string; thread_id?: string };
+}
+
+/**
+ * Maps from turn_id to provider name for active streaming turns.
+ */
+interface ActiveTurnStream {
+  turn_id: string;
+  thread_id: string;
+  providerName: string;
+  abortController: AbortController;
 }
 
 export class OrchestratorEngine {
@@ -27,9 +41,17 @@ export class OrchestratorEngine {
   private listeners: Set<ListenerEntry> = new Set();
   private inFlightCommands: Map<string, Promise<CommandResult>> = new Map();
   private dispatchQueue: Promise<unknown> = Promise.resolve();
+  private providerService: ProviderService;
+  private activeTurns: Map<string, ActiveTurnStream> = new Map();
 
-  constructor(sourceManager?: SourceManager) {
+  constructor(sourceManager?: SourceManager, providerService?: ProviderService) {
     this.sourceManager = sourceManager || new SourceManager();
+    const ps = providerService || new ProviderService();
+    // Register the default Pi adapter only when no provider service was injected
+    if (!providerService) {
+      ps.registerAdapter("pi", new PiAdapter());
+    }
+    this.providerService = ps;
     this.snapshot = createInitialSnapshot(DEFAULT_PI_CATALOG);
   }
 
@@ -133,6 +155,7 @@ export class OrchestratorEngine {
     // 3. Construct and append globally sequenced domain events
     const sequences: number[] = [];
     const newEvents: DomainEvent[] = [];
+    let turnId: string | undefined;
 
     for (const draft of decision.events) {
       const seq = this.nextSequence++;
@@ -150,6 +173,11 @@ export class OrchestratorEngine {
       newEvents.push(domainEvent);
       this.events.push(domainEvent);
       this.snapshot = applyEvent(this.snapshot, domainEvent);
+
+      // Capture turn_id from TurnQueued for streaming kickoff
+      if (draft.kind === "TurnQueued") {
+        turnId = draft.data.turn.id;
+      }
     }
 
     const successResult: CommandResult = {
@@ -163,51 +191,420 @@ export class OrchestratorEngine {
       sequences,
     });
 
-    // 4. Notify live subscribers
+    // 4. Notify live subscribers about the command-originated events
     for (const event of newEvents) {
-      for (const entry of this.listeners) {
-        if (entry.filter) {
-          const { project_id, thread_id } = entry.filter;
-          let eventProjectId: string | undefined;
-          let eventThreadId: string | undefined;
+      this.notifyListeners(event);
+    }
 
-          if (event.kind === "ProjectCreated") {
-            eventProjectId = event.data.project.id;
-          } else if (
-            event.kind === "ProjectArchived" ||
-            event.kind === "ProjectSettled" ||
-            event.kind === "ProjectDeleted"
-          ) {
-            eventProjectId = event.data.project_id;
-          } else if (event.kind === "ThreadCreated") {
-            eventThreadId = event.data.thread.id;
-            eventProjectId = event.data.thread.project_id;
-          } else if (
-            event.kind === "ThreadArchived" ||
-            event.kind === "ThreadSettled" ||
-            event.kind === "ThreadDeleted"
-          ) {
-            eventThreadId = event.data.thread_id;
-            eventProjectId = this.snapshot.threads[event.data.thread_id]?.project_id;
-          }
+    // 5. If this was a start_turn command, kick off async provider streaming
+    if (command.kind === "start_turn" && turnId) {
+      this.startTurnStream(command, turnId);
+    }
 
-          if (project_id !== undefined && eventProjectId !== project_id) {
-            continue;
-          }
-          if (thread_id !== undefined && eventThreadId !== thread_id) {
-            continue;
-          }
+    // 6. If this was interrupt_turn or stop_turn, signal the provider
+    if (command.kind === "interrupt_turn" || command.kind === "stop_turn") {
+      const active = this.activeTurns.get(command.turn_id);
+      if (active) {
+        if (command.kind === "stop_turn") {
+          this.providerService.stopTurn(active.providerName, {
+            turn_id: command.turn_id,
+            thread_id: command.thread_id,
+          }).catch(() => {});
+        } else {
+          this.providerService.interruptTurn(active.providerName, {
+            turn_id: command.turn_id,
+            thread_id: command.thread_id,
+          }).catch(() => {});
         }
-
-        try {
-          entry.listener(structuredClone(event));
-        } catch {
-          // Prevent listener errors from corrupting engine loop
-        }
+        active.abortController.abort();
+        this.activeTurns.delete(command.turn_id);
       }
     }
 
     return successResult;
+  }
+
+  /**
+   * Start the async provider streaming loop for a queued turn.
+   * Records TurnStarted, then processes canonical provider events
+   * by appending domain events until completion or failure.
+   */
+  private async startTurnStream(
+    command: Command & { kind: "start_turn" },
+    turnId: string
+  ): Promise<void> {
+    const thread = this.snapshot.threads[command.thread_id];
+    if (!thread) return;
+
+    const project = this.snapshot.projects[thread.project_id];
+    if (!project) return;
+
+    const workspacePath = resolveWorkspacePath(thread, this.snapshot.projects) || "";
+
+    // Determine provider name from model prefix (v1: always "pi")
+    const providerName = "pi";
+
+    const abortController = new AbortController();
+    const activeStream: ActiveTurnStream = {
+      turn_id: turnId,
+      thread_id: command.thread_id,
+      providerName,
+      abortController,
+    };
+    this.activeTurns.set(turnId, activeStream);
+
+    const startParams: StartTurnParams = {
+      turn_id: turnId,
+      thread_id: command.thread_id,
+      project_workspace_path: workspacePath,
+      model: thread.model,
+      access_profile: thread.access_profile,
+      interaction_mode: thread.interaction_mode,
+      prompt: command.content.text,
+      images: command.content.images,
+      correlation_id: command.correlation_id || command.command_id,
+      command_id: command.command_id,
+      signal: abortController.signal,
+    };
+
+    try {
+      const providerEvents = this.providerService.startTurn(providerName, startParams);
+
+      let turnRunning = false;
+
+      for await (const providerEvent of providerEvents) {
+        // Abort check: stop processing provider events if interrupted/stopped
+        if (abortController.signal.aborted) {
+          break;
+        }
+
+        // If this is the first non-failure event and the provider hasn't
+        // signaled turn start yet, emit TurnStarted to guarantee running state
+        if (
+          !turnRunning &&
+          providerEvent.kind !== "provider_turn_failed"
+        ) {
+          const turn = this.snapshot.turns[turnId];
+          if (turn && turn.status === "queued") {
+            // Only auto-emit if the provider event isn't itself a start signal
+            if (providerEvent.kind !== "provider_turn_started") {
+              this.appendStreamEvent(
+                this.makeDomainEvent(
+                  { kind: "TurnStarted", data: { turn_id: turnId } },
+                  turnId,
+                  command
+                )
+              );
+            }
+          }
+          turnRunning = true;
+        }
+
+        const events = this.normalizeProviderEvent(providerEvent, turnId, command);
+        for (const event of events) {
+          this.appendStreamEvent(event);
+        }
+
+        // Mark turn as running on first provider event
+        if (!turnRunning) {
+          turnRunning = true;
+        }
+
+        // If the provider stream ends or we hit a terminal state, stop
+        if (
+          providerEvent.kind === "provider_turn_completed" ||
+          providerEvent.kind === "provider_turn_failed"
+        ) {
+          break;
+        }
+
+        // Check abort again after processing, in case the event handler itself
+        // triggered an interrupt
+        if (abortController.signal.aborted) {
+          break;
+        }
+      }
+
+      // Handle unexpected stream exhaustion: if the provider iterable closed
+      // without a terminal event, fail the turn
+      const finalStatus = this.snapshot.turns[turnId]?.status;
+      if (
+        finalStatus &&
+        finalStatus !== "completed" &&
+        finalStatus !== "failed" &&
+        finalStatus !== "interrupted"
+      ) {
+        const failEvent = this.makeDomainEvent(
+          {
+            kind: "TurnFailed",
+            data: {
+              turn_id: turnId,
+              error: {
+                code: "provider_stream_exhausted",
+                detail: "Provider stream ended without a terminal event.",
+              },
+            },
+          },
+          turnId,
+          command
+        );
+        this.appendStreamEvent(failEvent);
+      }
+    } catch (err: unknown) {
+      // Only record failure if the turn wasn't explicitly interrupted/stopped
+      if (this.snapshot.turns[turnId]?.status === "queued" || this.snapshot.turns[turnId]?.status === "running") {
+        const failEvent = this.makeDomainEvent(
+          {
+            kind: "TurnFailed",
+            data: {
+              turn_id: turnId,
+              error: {
+                code: "provider_error",
+                detail: err instanceof Error ? err.message : String(err),
+              },
+            },
+          },
+          turnId,
+          command
+        );
+        this.appendStreamEvent(failEvent);
+      }
+    } finally {
+      this.activeTurns.delete(turnId);
+    }
+  }
+
+  /**
+   * Append a domain event from the streaming provider turn.
+   * Sequences it, pushes to event log, projects to snapshot, notifies listeners.
+   */
+  private appendStreamEvent(event: DomainEvent): void {
+    this.events.push(event);
+    this.snapshot = applyEvent(this.snapshot, event);
+    this.notifyListeners(event);
+  }
+
+  /**
+   * Normalize a canonical provider event into one or more domain events.
+   */
+  private normalizeProviderEvent(
+    providerEvent: CanonicalProviderEvent,
+    turnId: string,
+    command: Command
+  ): DomainEvent[] {
+    const ts = new Date().toISOString();
+
+    switch (providerEvent.kind) {
+      case "provider_turn_started": {
+        return [
+          this.makeDomainEvent(
+            { kind: "TurnStarted", data: { turn_id: turnId } },
+            turnId,
+            command,
+            ts
+          ),
+        ];
+      }
+      case "assistant_text_delta": {
+        return [
+          this.makeDomainEvent(
+            {
+              kind: "AssistantMessageDelta",
+              data: { turn_id: turnId, text: providerEvent.text },
+            },
+            turnId,
+            command,
+            ts
+          ),
+        ];
+      }
+      case "tool_activity_began": {
+        const activity = {
+          id: providerEvent.activity_id,
+          turn_id: turnId,
+          tool: providerEvent.tool,
+          input: providerEvent.input,
+          status: "in_progress" as const,
+          started_at: ts,
+        };
+        return [
+          this.makeDomainEvent(
+            {
+              kind: "ToolActivityBegan",
+              data: { turn_id: turnId, activity },
+            },
+            turnId,
+            command,
+            ts
+          ),
+        ];
+      }
+      case "tool_activity_delta": {
+        return [
+          this.makeDomainEvent(
+            {
+              kind: "ToolActivityDelta",
+              data: {
+                turn_id: turnId,
+                activity_id: providerEvent.activity_id,
+                content: providerEvent.content,
+              },
+            },
+            turnId,
+            command,
+            ts
+          ),
+        ];
+      }
+      case "tool_activity_completed": {
+        return [
+          this.makeDomainEvent(
+            {
+              kind: "ToolActivityCompleted",
+              data: {
+                turn_id: turnId,
+                activity_id: providerEvent.activity_id,
+                status: providerEvent.status,
+                output: providerEvent.output,
+                error: providerEvent.error,
+              },
+            },
+            turnId,
+            command,
+            ts
+          ),
+        ];
+      }
+      case "assistant_message_completed": {
+        return [
+          this.makeDomainEvent(
+            { kind: "AssistantMessageCompleted", data: { turn_id: turnId } },
+            turnId,
+            command,
+            ts
+          ),
+        ];
+      }
+      case "provider_turn_completed": {
+        return [
+          this.makeDomainEvent(
+            { kind: "TurnCompleted", data: { turn_id: turnId } },
+            turnId,
+            command,
+            ts
+          ),
+        ];
+      }
+      case "provider_turn_failed": {
+        return [
+          this.makeDomainEvent(
+            {
+              kind: "TurnFailed",
+              data: {
+                turn_id: turnId,
+                error: { code: providerEvent.code, detail: providerEvent.detail },
+              },
+            },
+            turnId,
+            command,
+            ts
+          ),
+        ];
+      }
+    }
+  }
+
+  /**
+   * Construct a DomainEvent with proper metadata from a raw draft.
+   */
+  private makeDomainEvent(
+    draft: { kind: string; data: Record<string, unknown> },
+    _turnId: string,
+    command: Command,
+    timestamp?: string
+  ): DomainEvent {
+    const seq = this.nextSequence++;
+    const ts = timestamp || new Date().toISOString();
+    return {
+      sequence: seq,
+      event_id: `evt-${seq}-${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: ts,
+      command_id: command.command_id,
+      correlation_id: command.correlation_id || command.command_id,
+      causation_id: command.causation_id,
+      kind: draft.kind,
+      data: draft.data,
+    } as DomainEvent;
+  }
+
+  /**
+   * Filter and notify subscribers about a domain event.
+   */
+  private notifyListeners(event: DomainEvent): void {
+    for (const entry of this.listeners) {
+      if (entry.filter) {
+        const { project_id, thread_id } = entry.filter;
+        const scoping = this.getEventScoping(event);
+        let eventProjectId = scoping.project_id;
+        let eventThreadId = scoping.thread_id;
+
+        // For turn events, resolve project_id from the thread
+        if (!eventProjectId && eventThreadId) {
+          const th = this.snapshot.threads[eventThreadId];
+          if (th) {
+            eventProjectId = th.project_id;
+          }
+        }
+
+        if (project_id !== undefined && eventProjectId !== project_id) {
+          continue;
+        }
+        if (thread_id !== undefined && eventThreadId !== thread_id) {
+          continue;
+        }
+      }
+
+      try {
+        entry.listener(structuredClone(event));
+      } catch {
+        // Prevent listener errors from corrupting engine loop
+      }
+    }
+  }
+
+  /**
+   * Extract project_id and thread_id from a domain event for subscription filtering.
+   */
+  private getEventScoping(event: DomainEvent): { project_id?: string; thread_id?: string } {
+    switch (event.kind) {
+      case "ProjectCreated":
+        return { project_id: event.data.project.id };
+      case "ProjectArchived":
+      case "ProjectSettled":
+      case "ProjectDeleted":
+        return { project_id: event.data.project_id };
+      case "ThreadCreated":
+        return { project_id: event.data.thread.project_id, thread_id: event.data.thread.id };
+      case "ThreadArchived":
+      case "ThreadSettled":
+      case "ThreadDeleted":
+        return { thread_id: event.data.thread_id };
+      case "TurnQueued":
+        return { thread_id: event.data.turn.thread_id };
+      case "TurnStarted":
+      case "AssistantMessageDelta":
+      case "ToolActivityBegan":
+      case "ToolActivityDelta":
+      case "ToolActivityCompleted":
+      case "AssistantMessageCompleted":
+      case "TurnPaused":
+      case "TurnCompleted":
+      case "TurnFailed":
+      case "TurnInterrupted":
+        return { thread_id: event.data.turn_id ? this.snapshot.turns[event.data.turn_id]?.thread_id : undefined };
+      default:
+        return {};
+    }
   }
 
   // Queries
@@ -254,6 +651,17 @@ export class OrchestratorEngine {
     return structuredClone(list);
   }
 
+  getTurn(turnId: string): Turn | undefined {
+    const turn = this.snapshot.turns[turnId];
+    return turn ? structuredClone(turn) : undefined;
+  }
+
+  listTurns(threadId: string): Turn[] {
+    return structuredClone(
+      Object.values(this.snapshot.turns).filter((t) => t.thread_id === threadId)
+    );
+  }
+
   getEvents(fromSequence = 1): DomainEvent[] {
     const list = this.events.filter((e) => e.sequence >= fromSequence);
     return structuredClone(list);
@@ -290,6 +698,7 @@ export class OrchestratorEngine {
 
     const projects: Record<string, Project> = {};
     const threads: Record<string, Thread> = {};
+    const turns: Record<string, Turn> = {};
 
     if (filter.project_id && filter.thread_id) {
       const th = full.threads[filter.thread_id];
@@ -298,12 +707,23 @@ export class OrchestratorEngine {
         if (full.projects[filter.project_id]) {
           projects[filter.project_id] = full.projects[filter.project_id];
         }
+        // Include turns for the scoped thread
+        for (const t of Object.values(full.turns)) {
+          if (t.thread_id === filter.thread_id) {
+            turns[t.id] = t;
+          }
+        }
       }
     } else if (filter.thread_id && full.threads[filter.thread_id]) {
       const th = full.threads[filter.thread_id];
       threads[th.id] = th;
       if (full.projects[th.project_id]) {
         projects[th.project_id] = full.projects[th.project_id];
+      }
+      for (const t of Object.values(full.turns)) {
+        if (t.thread_id === filter.thread_id) {
+          turns[t.id] = t;
+        }
       }
     } else if (filter.project_id && full.projects[filter.project_id]) {
       projects[filter.project_id] = full.projects[filter.project_id];
@@ -312,15 +732,24 @@ export class OrchestratorEngine {
           threads[th.id] = th;
         }
       }
+      // Include turns for all threads in the project
+      for (const t of Object.values(full.turns)) {
+        const th = full.threads[t.thread_id];
+        if (th && th.project_id === filter.project_id) {
+          turns[t.id] = t;
+        }
+      }
     }
 
     return {
       sequence: full.sequence,
       projects,
       threads,
+      turns,
       catalog: full.catalog,
     };
   }
+
   subscribe(
     listener: (event: DomainEvent) => void,
     filter?: { project_id?: string; thread_id?: string },

@@ -84,6 +84,80 @@ export interface CuratedPiCatalog {
   interaction_modes: InteractionModeDefinition[];
 }
 
+// Turn types
+export type TurnStatus = "queued" | "running" | "paused" | "completed" | "failed" | "interrupted";
+
+export type ToolActivityStatus = "in_progress" | "success" | "failure" | "decline" | "interrupted";
+
+export interface ImageAttachment {
+  media_type: string;
+  data: string; // base64-encoded, bounded in size
+}
+
+export interface UserMessageContent {
+  text: string;
+  images?: ImageAttachment[];
+}
+
+export interface ToolActivity {
+  id: string;
+  turn_id: string;
+  tool: string;
+  input?: unknown;
+  output?: unknown;
+  error?: string;
+  status: ToolActivityStatus;
+  started_at: string;
+  completed_at?: string;
+}
+
+export interface AssistantMessage {
+  id: string;
+  turn_id: string;
+  parts: AssistantMessagePart[];
+  is_complete: boolean;
+}
+
+export type AssistantMessagePart =
+  | { kind: "text"; content: string }
+  | { kind: "tool_use"; activity_id: string; tool: string; input?: unknown; output?: unknown; status: ToolActivityStatus };
+
+export interface Turn {
+  id: string;
+  thread_id: string;
+  status: TurnStatus;
+  user_message: UserMessageContent;
+  assistant_message?: AssistantMessage;
+  activities: Record<string, ToolActivity>;
+  created_at: string;
+  updated_at: string;
+  error?: { code: string; detail: string };
+}
+
+// Image bounds constants
+export const MAX_IMAGE_COUNT = 5;
+export const MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024; // 20 MiB total per turn
+
+/**
+ * Validate image attachments against bounds.
+ * Returns a validation error message, or null if valid.
+ */
+export function validateImageAttachments(
+  images?: ImageAttachment[]
+): string | null {
+  if (!images || images.length === 0) return null;
+  if (images.length > MAX_IMAGE_COUNT) {
+    return `Image count ${images.length} exceeds maximum of ${MAX_IMAGE_COUNT}.`;
+  }
+  const totalBytes = images.reduce((sum, img) => sum + img.data.length, 0);
+  // data is base64-encoded; actual byte size is ~3/4 of base64 length
+  const approxBytes = Math.ceil(totalBytes * 0.75);
+  if (approxBytes > MAX_IMAGE_SIZE_BYTES) {
+    return `Total image size exceeds ${MAX_IMAGE_SIZE_BYTES / (1024 * 1024)} MiB limit (approx ${Math.round(approxBytes / (1024 * 1024))} MiB).`;
+  }
+  return null;
+}
+
 // Commands
 export interface CommandMeta {
   command_id: string;
@@ -99,7 +173,10 @@ export type Command =
   | ({ kind: "create_thread"; project_id: string; title?: string; model: PiModelId; access_profile: RuntimeAccessProfile; interaction_mode: InteractionMode; thread_id?: string } & CommandMeta)
   | ({ kind: "archive_thread"; thread_id: string } & CommandMeta)
   | ({ kind: "settle_thread"; thread_id: string } & CommandMeta)
-  | ({ kind: "delete_thread"; thread_id: string } & CommandMeta);
+  | ({ kind: "delete_thread"; thread_id: string } & CommandMeta)
+  | ({ kind: "start_turn"; thread_id: string; content: UserMessageContent; turn_id?: string } & CommandMeta)
+  | ({ kind: "interrupt_turn"; turn_id: string; thread_id: string } & CommandMeta)
+  | ({ kind: "stop_turn"; turn_id: string; thread_id: string } & CommandMeta);
 
 // Events
 export interface DomainEventMeta {
@@ -120,14 +197,26 @@ export type DomainEvent =
   | ({ kind: "ThreadCreated"; data: { thread: Thread } } & DomainEventMeta)
   | ({ kind: "ThreadArchived"; data: { thread_id: string } } & DomainEventMeta)
   | ({ kind: "ThreadSettled"; data: { thread_id: string } } & DomainEventMeta)
-  | ({ kind: "ThreadDeleted"; data: { thread_id: string } } & DomainEventMeta);
+  | ({ kind: "ThreadDeleted"; data: { thread_id: string } } & DomainEventMeta)
+  | ({ kind: "TurnQueued"; data: { turn: Turn } } & DomainEventMeta)
+  | ({ kind: "TurnStarted"; data: { turn_id: string } } & DomainEventMeta)
+  | ({ kind: "AssistantMessageDelta"; data: { turn_id: string; text: string } } & DomainEventMeta)
+  | ({ kind: "ToolActivityBegan"; data: { turn_id: string; activity: ToolActivity } } & DomainEventMeta)
+  | ({ kind: "ToolActivityDelta"; data: { turn_id: string; activity_id: string; content: string } } & DomainEventMeta)
+  | ({ kind: "ToolActivityCompleted"; data: { turn_id: string; activity_id: string; status: ToolActivityStatus; output?: unknown; error?: string } } & DomainEventMeta)
+  | ({ kind: "AssistantMessageCompleted"; data: { turn_id: string } } & DomainEventMeta)
+  | ({ kind: "TurnPaused"; data: { turn_id: string } } & DomainEventMeta)
+  | ({ kind: "TurnCompleted"; data: { turn_id: string } } & DomainEventMeta)
+  | ({ kind: "TurnFailed"; data: { turn_id: string; error: { code: string; detail: string } } } & DomainEventMeta)
+  | ({ kind: "TurnInterrupted"; data: { turn_id: string } } & DomainEventMeta);
 
 // Command Results & Receipts
 export type CommandSuccess = {
   ok: true;
   project_id?: string;
   thread_id?: string;
-  status?: LifecycleStatus;
+  turn_id?: string;
+  status?: LifecycleStatus | TurnStatus;
   duplicate?: boolean;
 };
 
@@ -151,6 +240,7 @@ export interface Snapshot {
   sequence: number;
   projects: Record<string, Project>;
   threads: Record<string, Thread>;
+  turns: Record<string, Turn>;
   catalog: CuratedPiCatalog;
 }
 
