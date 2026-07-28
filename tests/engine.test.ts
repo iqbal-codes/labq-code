@@ -430,4 +430,112 @@ describe("OrchestratorEngine", () => {
     const contents = fs.readdirSync(managedRoot);
     expect(contents.length).toBe(0);
   });
+  test("exposes command receipts and sequence metadata via getReceipt", async () => {
+    const dir = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    const res = await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "receipt-cmd-1",
+      project_id: "p-receipt",
+      name: "Receipt Proj",
+      source: { kind: "local_folder", path: dir },
+    });
+    expect(res.ok).toBe(true);
+
+    const receipt = engine.getReceipt("receipt-cmd-1");
+    expect(receipt).toBeDefined();
+    expect(receipt?.command_id).toBe("receipt-cmd-1");
+    expect(receipt?.sequences).toEqual([1]);
+    expect(receipt?.result.ok).toBe(true);
+  });
+
+  test("handles in-flight command concurrency without racing or duplicate execution", async () => {
+    const managedRoot = makeTempDir();
+    // Use a delayed cloner to simulate async work
+    const delayedCloner = async (_url: string, targetPath: string) => {
+      await new Promise((r) => setTimeout(r, 50));
+      fs.writeFileSync(path.join(targetPath, "cloned.txt"), "ok");
+    };
+
+    const sourceManager = new SourceManager({
+      managedWorkspaceRoot: managedRoot,
+      gitCloner: delayedCloner,
+    });
+    const engine = new OrchestratorEngine(sourceManager);
+
+    const cmd = {
+      kind: "create_project" as const,
+      command_id: "concurrent-cmd-id",
+      project_id: "proj-concurrent",
+      name: "Concurrent Proj",
+      source: { kind: "git_url" as const, url: "https://github.com/example/concurrent.git" },
+    };
+
+    // Dispatch two concurrent calls with identical command_id
+    const [res1, res2] = await Promise.all([
+      engine.dispatchCommand(cmd),
+      engine.dispatchCommand(cmd),
+    ]);
+
+    expect(res1.ok).toBe(true);
+    expect(res2.ok).toBe(true);
+
+    // One of them is primary, the other is marked duplicate
+    const duplicates = [res1.duplicate, res2.duplicate].filter(Boolean);
+    expect(duplicates.length).toBe(1);
+
+    // Only one event was created
+    expect(engine.getEvents().length).toBe(1);
+  });
+
+  test("filters live event subscriptions by project_id and thread_id scope", async () => {
+    const dir1 = makeTempDir();
+    const dir2 = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p1-cmd",
+      project_id: "proj-sub-1",
+      name: "Proj 1",
+      source: { kind: "local_folder", path: dir1 },
+    });
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p2-cmd",
+      project_id: "proj-sub-2",
+      name: "Proj 2",
+      source: { kind: "local_folder", path: dir2 },
+    });
+
+    const proj1Events: any[] = [];
+    engine.subscribe((e) => proj1Events.push(e), { project_id: "proj-sub-1" });
+
+    // Create thread in proj-sub-1
+    await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "t1-cmd",
+      thread_id: "th-sub-1",
+      project_id: "proj-sub-1",
+      model: "pi-default",
+      access_profile: "read-only",
+      interaction_mode: "execute",
+    });
+
+    // Create thread in proj-sub-2
+    await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "t2-cmd",
+      thread_id: "th-sub-2",
+      project_id: "proj-sub-2",
+      model: "pi-default",
+      access_profile: "read-only",
+      interaction_mode: "execute",
+    });
+
+    // Proj 1 listener should only receive thread 1 event, not thread 2 event
+    expect(proj1Events.length).toBe(1);
+    expect(proj1Events[0].data.thread.id).toBe("th-sub-1");
+  });
 });

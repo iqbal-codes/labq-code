@@ -99,8 +99,13 @@ describe("SourceManager", () => {
 
   test("acquires valid Git URL into managed workspace", async () => {
     const managedRoot = makeTempDir();
+    const mockCloner = async (_url: string, targetPath: string) => {
+      fs.writeFileSync(path.join(targetPath, "README.md"), "# Mock Repo");
+    };
+
     const sourceManager = new SourceManager({
       managedWorkspaceRoot: managedRoot,
+      gitCloner: mockCloner,
     });
 
     const result = await sourceManager.validateAndAcquire({

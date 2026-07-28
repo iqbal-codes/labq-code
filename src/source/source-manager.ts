@@ -1,22 +1,42 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { SourceDescriptor, ProjectSource } from "../domain/types.js";
+
+const execFileAsync = promisify(execFile);
 
 export interface SourceManagerOptions {
   managedWorkspaceRoot?: string;
   gitCloner?: (url: string, targetPath: string) => Promise<void>;
 }
 
+async function defaultGitCloner(url: string, targetPath: string): Promise<void> {
+  try {
+    await execFileAsync("git", ["clone", "--depth", "1", url, targetPath]);
+  } catch (err: unknown) {
+    const execErr = err as { stderr?: string | Buffer; message?: string };
+    const stderr =
+      typeof execErr.stderr === "string"
+        ? execErr.stderr.trim()
+        : execErr.stderr
+        ? String(execErr.stderr).trim()
+        : "";
+    const message = stderr || (err instanceof Error ? err.message : String(err));
+    throw new Error(`Git clone failed: ${message}`);
+  }
+}
+
 export class SourceManager {
   private managedRoot: string;
-  private gitCloner?: (url: string, targetPath: string) => Promise<void>;
+  private gitCloner: (url: string, targetPath: string) => Promise<void>;
 
   constructor(options: SourceManagerOptions = {}) {
     this.managedRoot =
       options.managedWorkspaceRoot ||
       path.join(os.tmpdir(), "labq-orchestrator-workspaces");
-    this.gitCloner = options.gitCloner;
+    this.gitCloner = options.gitCloner || defaultGitCloner;
   }
 
   async validateAndAcquire(
@@ -69,15 +89,7 @@ export class SourceManager {
 
       try {
         fs.mkdirSync(workspacePath, { recursive: true });
-        if (this.gitCloner) {
-          await this.gitCloner(url, workspacePath);
-        } else {
-          // Default transactional acquisition mock/placeholder directory setup
-          fs.writeFileSync(
-            path.join(workspacePath, ".labq-workspace.json"),
-            JSON.stringify({ url, created_at: new Date().toISOString() })
-          );
-        }
+        await this.gitCloner(url, workspacePath);
       } catch (err: unknown) {
         // Transactional cleanup on failure
         this.cleanupPath(workspacePath);

@@ -13,13 +13,19 @@ import { decideCommand } from "./decider.js";
 import { applyEvent, createInitialSnapshot, rebuildSnapshot } from "./projector.js";
 import { DEFAULT_PI_CATALOG } from "../catalog/pi-catalog.js";
 
+interface ListenerEntry {
+  listener: (event: DomainEvent) => void;
+  filter?: { project_id?: string; thread_id?: string };
+}
+
 export class OrchestratorEngine {
   private events: DomainEvent[] = [];
   private receipts: Map<string, CommandReceipt> = new Map();
   private snapshot: Snapshot;
   private nextSequence = 1;
   private sourceManager: SourceManager;
-  private listeners: Set<(event: DomainEvent) => void> = new Set();
+  private listeners: Set<ListenerEntry> = new Set();
+  private inFlightCommands: Map<string, Promise<CommandResult>> = new Map();
 
   constructor(sourceManager?: SourceManager) {
     this.sourceManager = sourceManager || new SourceManager();
@@ -36,7 +42,31 @@ export class OrchestratorEngine {
       };
     }
 
-    // 2. Resolve source for project creation if applicable
+    // 2. In-flight check: concurrent command execution with same command_id
+    const inFlight = this.inFlightCommands.get(command.command_id);
+    if (inFlight) {
+      const result = await inFlight;
+      return {
+        ...result,
+        duplicate: true,
+      };
+    }
+
+    // 3. Wrap execution in Promise and store in inFlightCommands
+    const executionPromise = (async (): Promise<CommandResult> => {
+      try {
+        return await this.executeCommand(command);
+      } finally {
+        this.inFlightCommands.delete(command.command_id);
+      }
+    })();
+
+    this.inFlightCommands.set(command.command_id, executionPromise);
+    return await executionPromise;
+  }
+
+  private async executeCommand(command: Command): Promise<CommandResult> {
+    // 1. Resolve source for project creation if applicable
     let resolvedSource;
     if (command.kind === "create_project") {
       const sourceRes = await this.sourceManager.validateAndAcquire(
@@ -58,7 +88,7 @@ export class OrchestratorEngine {
       resolvedSource = sourceRes.source;
     }
 
-    // 3. Evaluate domain decision
+    // 2. Evaluate domain decision
     const nowIso = new Date().toISOString();
     const decision = decideCommand(
       this.snapshot,
@@ -84,7 +114,7 @@ export class OrchestratorEngine {
       return errorResult;
     }
 
-    // 4. Construct and append globally sequenced domain events
+    // 3. Construct and append globally sequenced domain events
     const sequences: number[] = [];
     const newEvents: DomainEvent[] = [];
 
@@ -117,11 +147,44 @@ export class OrchestratorEngine {
       sequences,
     });
 
-    // 5. Notify live subscribers
+    // 4. Notify live subscribers
     for (const event of newEvents) {
-      for (const listener of this.listeners) {
+      for (const entry of this.listeners) {
+        if (entry.filter) {
+          const { project_id, thread_id } = entry.filter;
+          let eventProjectId: string | undefined;
+          let eventThreadId: string | undefined;
+
+          if (event.kind === "ProjectCreated") {
+            eventProjectId = event.data.project.id;
+          } else if (
+            event.kind === "ProjectArchived" ||
+            event.kind === "ProjectSettled" ||
+            event.kind === "ProjectDeleted"
+          ) {
+            eventProjectId = event.data.project_id;
+          } else if (event.kind === "ThreadCreated") {
+            eventThreadId = event.data.thread.id;
+            eventProjectId = event.data.thread.project_id;
+          } else if (
+            event.kind === "ThreadArchived" ||
+            event.kind === "ThreadSettled" ||
+            event.kind === "ThreadDeleted"
+          ) {
+            eventThreadId = event.data.thread_id;
+            eventProjectId = this.snapshot.threads[event.data.thread_id]?.project_id;
+          }
+
+          if (project_id !== undefined && eventProjectId !== project_id) {
+            continue;
+          }
+          if (thread_id !== undefined && eventThreadId !== thread_id) {
+            continue;
+          }
+        }
+
         try {
-          listener(event);
+          entry.listener(structuredClone(event));
         } catch {
           // Prevent listener errors from corrupting engine loop
         }
@@ -134,6 +197,11 @@ export class OrchestratorEngine {
   // Queries
   getSnapshot(): Snapshot {
     return structuredClone(this.snapshot);
+  }
+
+  getReceipt(commandId: string): CommandReceipt | undefined {
+    const receipt = this.receipts.get(commandId);
+    return receipt ? structuredClone(receipt) : undefined;
   }
 
   rebuildSnapshotFromHistory(): Snapshot {
@@ -194,14 +262,18 @@ export class OrchestratorEngine {
       mode: "replay",
       from: cursor,
       to: this.snapshot.sequence,
-      events: replayEvents,
+      events: structuredClone(replayEvents),
     };
   }
 
-  subscribe(listener: (event: DomainEvent) => void): () => void {
-    this.listeners.add(listener);
+  subscribe(
+    listener: (event: DomainEvent) => void,
+    filter?: { project_id?: string; thread_id?: string }
+  ): () => void {
+    const entry: ListenerEntry = { listener, filter };
+    this.listeners.add(entry);
     return () => {
-      this.listeners.delete(listener);
+      this.listeners.delete(entry);
     };
   }
 }

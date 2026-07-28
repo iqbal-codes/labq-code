@@ -27,77 +27,77 @@ export function applyEvent(
   switch (event.kind) {
     case "ProjectCreated": {
       const proj = event.data.project;
-      next.projects[proj.id] = { ...proj };
+      next.projects[proj.id] = structuredClone(proj);
       break;
     }
     case "ProjectArchived": {
       const proj = next.projects[event.data.project_id];
       if (proj) {
-        next.projects[proj.id] = {
+        next.projects[proj.id] = structuredClone({
           ...proj,
           status: "archived",
           updated_at: event.timestamp,
-        };
+        });
       }
       break;
     }
     case "ProjectSettled": {
       const proj = next.projects[event.data.project_id];
       if (proj) {
-        next.projects[proj.id] = {
+        next.projects[proj.id] = structuredClone({
           ...proj,
           status: "settled",
           updated_at: event.timestamp,
-        };
+        });
       }
       break;
     }
     case "ProjectDeleted": {
       const proj = next.projects[event.data.project_id];
       if (proj) {
-        next.projects[proj.id] = {
+        next.projects[proj.id] = structuredClone({
           ...proj,
           status: "deleted",
           updated_at: event.timestamp,
-        };
+        });
       }
       break;
     }
     case "ThreadCreated": {
       const th = event.data.thread;
-      next.threads[th.id] = { ...th };
+      next.threads[th.id] = structuredClone(th);
       break;
     }
     case "ThreadArchived": {
       const th = next.threads[event.data.thread_id];
       if (th) {
-        next.threads[th.id] = {
+        next.threads[th.id] = structuredClone({
           ...th,
           status: "archived",
           updated_at: event.timestamp,
-        };
+        });
       }
       break;
     }
     case "ThreadSettled": {
       const th = next.threads[event.data.thread_id];
       if (th) {
-        next.threads[th.id] = {
+        next.threads[th.id] = structuredClone({
           ...th,
           status: "settled",
           updated_at: event.timestamp,
-        };
+        });
       }
       break;
     }
     case "ThreadDeleted": {
       const th = next.threads[event.data.thread_id];
       if (th) {
-        next.threads[th.id] = {
+        next.threads[th.id] = structuredClone({
           ...th,
           status: "deleted",
           updated_at: event.timestamp,
-        };
+        });
       }
       break;
     }

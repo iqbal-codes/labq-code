@@ -22,7 +22,7 @@ export type EventDraft =
   | { kind: "ThreadDeleted"; data: { thread_id: string } };
 
 export type DeciderResult =
-  | { ok: true; events: EventDraft[]; resultData: Record<string, any> }
+  | { ok: true; events: EventDraft[]; resultData: Record<string, unknown> }
   | { ok: false; code: string; detail: string };
 
 export function decideCommand(
@@ -297,7 +297,7 @@ export function decideCommand(
       return {
         ok: false,
         code: "unknown_command",
-        detail: `Unknown command kind: ${(command as any).kind}`,
+        detail: `Unknown command kind: ${(command as { kind: string }).kind}`,
       };
   }
 }
