@@ -170,4 +170,16 @@ describe("SourceManager", () => {
       }
     }
   });
+  test("cleanupPath refuses to delete directories outside managed workspace root", async () => {
+    const managedRoot = makeTempDir();
+    const userLocalDir = makeTempDir();
+    const userFile = path.join(userLocalDir, "user_data.txt");
+    fs.writeFileSync(userFile, "important user code");
+
+    const sourceManager = new SourceManager({ managedWorkspaceRoot: managedRoot });
+    sourceManager.cleanupPath(userLocalDir);
+
+    // User folder and file MUST remain intact
+    expect(fs.existsSync(userFile)).toBe(true);
+  });
 });

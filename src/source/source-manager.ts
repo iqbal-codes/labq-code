@@ -160,8 +160,17 @@ export class SourceManager {
 
   cleanupPath(targetPath: string): void {
     try {
-      if (fs.existsSync(targetPath)) {
-        fs.rmSync(targetPath, { recursive: true, force: true });
+      const resolvedTarget = path.resolve(targetPath);
+      const resolvedRoot = path.resolve(this.managedRoot);
+      const relative = path.relative(resolvedRoot, resolvedTarget);
+
+      if (
+        relative &&
+        !relative.startsWith("..") &&
+        !path.isAbsolute(relative) &&
+        fs.existsSync(resolvedTarget)
+      ) {
+        fs.rmSync(resolvedTarget, { recursive: true, force: true });
       }
     } catch {
       // Best-effort cleanup
