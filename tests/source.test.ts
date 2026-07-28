@@ -99,10 +99,12 @@ describe("SourceManager", () => {
   test("cleans up managed workspace artifacts when acquisition is canceled via AbortSignal", async () => {
     const managedRoot = makeTempDir();
     const controller = new AbortController();
-    const slowCloner = async (_url: string, targetPath: string) => {
+    const slowCloner = async (_url: string, targetPath: string, options?: { signal?: AbortSignal }) => {
       fs.writeFileSync(path.join(targetPath, "temp-clone-file.txt"), "cloning...");
       controller.abort();
-      await new Promise((r) => setTimeout(r, 100));
+      if (options?.signal?.aborted) {
+        throw new Error("Managed acquisition was canceled.");
+      }
     };
 
     const sourceManager = new SourceManager({

@@ -9,12 +9,18 @@ const execFileAsync = promisify(execFile);
 
 export interface SourceManagerOptions {
   managedWorkspaceRoot?: string;
-  gitCloner?: (url: string, targetPath: string) => Promise<void>;
+  gitCloner?: (url: string, targetPath: string, options?: { signal?: AbortSignal }) => Promise<void>;
 }
 
-async function defaultGitCloner(url: string, targetPath: string): Promise<void> {
+async function defaultGitCloner(
+  url: string,
+  targetPath: string,
+  options?: { signal?: AbortSignal }
+): Promise<void> {
   try {
-    await execFileAsync("git", ["clone", "--depth", "1", url, targetPath]);
+    await execFileAsync("git", ["clone", "--depth", "1", url, targetPath], {
+      signal: options?.signal,
+    });
   } catch (err: unknown) {
     const execErr = err as { stderr?: string | Buffer; message?: string };
     const stderr =
@@ -27,10 +33,9 @@ async function defaultGitCloner(url: string, targetPath: string): Promise<void> 
     throw new Error(`Git clone failed: ${message}`);
   }
 }
-
 export class SourceManager {
   private managedRoot: string;
-  private gitCloner: (url: string, targetPath: string) => Promise<void>;
+  private gitCloner: (url: string, targetPath: string, options?: { signal?: AbortSignal }) => Promise<void>;
 
   constructor(options: SourceManagerOptions = {}) {
     this.managedRoot =
@@ -100,20 +105,9 @@ export class SourceManager {
           throw new Error("Managed acquisition was canceled.");
         }
         fs.mkdirSync(workspacePath, { recursive: true });
-
-        const clonePromise = this.gitCloner(url, workspacePath);
-        if (options?.signal) {
-          const signal = options.signal;
-          await Promise.race([
-            clonePromise,
-            new Promise<never>((_, reject) => {
-              const onAbort = () => reject(new Error("Managed acquisition was canceled."));
-              if (signal.aborted) onAbort();
-              else signal.addEventListener("abort", onAbort, { once: true });
-            }),
-          ]);
-        } else {
-          await clonePromise;
+        await this.gitCloner(url, workspacePath, options);
+        if (options?.signal?.aborted) {
+          throw new Error("Managed acquisition was canceled.");
         }
       } catch (err: unknown) {
         // Transactional cleanup on failure or cancellation

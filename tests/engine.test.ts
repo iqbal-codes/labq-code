@@ -597,6 +597,34 @@ describe("OrchestratorEngine", () => {
     expect(receivedEvents[0].kind).toBe("SnapshotEmitted");
     expect(receivedEvents[0].data.snapshot.sequence).toBe(1);
   });
+  test("scopes initial snapshot emission by project_id filter", async () => {
+    const dir1 = makeTempDir();
+    const dir2 = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p1-cmd",
+      project_id: "proj-1",
+      name: "Proj 1",
+      source: { kind: "local_folder", path: dir1 },
+    });
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p2-cmd",
+      project_id: "proj-2",
+      name: "Proj 2",
+      source: { kind: "local_folder", path: dir2 },
+    });
+
+    const events: any[] = [];
+    engine.subscribe((e) => events.push(e), { project_id: "proj-1" });
+
+    expect(events.length).toBe(1);
+    expect(events[0].kind).toBe("SnapshotEmitted");
+    const snapProjects = events[0].data.snapshot.projects;
+    expect(Object.keys(snapProjects)).toEqual(["proj-1"]);
+  });
   test("rejects project creation with empty name", async () => {
     const engine = new OrchestratorEngine();
     const res = await engine.dispatchCommand({

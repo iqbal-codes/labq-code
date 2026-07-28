@@ -282,6 +282,38 @@ export class OrchestratorEngine {
     };
   }
 
+  getScopedSnapshot(filter?: { project_id?: string; thread_id?: string }): Snapshot {
+    const full = this.getSnapshot();
+    if (!filter || (!filter.project_id && !filter.thread_id)) {
+      return full;
+    }
+
+    const projects: Record<string, Project> = {};
+    const threads: Record<string, Thread> = {};
+
+    let targetProjectId = filter.project_id;
+    if (filter.thread_id && full.threads[filter.thread_id]) {
+      const th = full.threads[filter.thread_id];
+      threads[th.id] = th;
+      targetProjectId = th.project_id;
+    }
+
+    if (targetProjectId && full.projects[targetProjectId]) {
+      projects[targetProjectId] = full.projects[targetProjectId];
+      for (const th of Object.values(full.threads)) {
+        if (th.project_id === targetProjectId) {
+          threads[th.id] = th;
+        }
+      }
+    }
+
+    return {
+      sequence: full.sequence,
+      projects,
+      threads,
+      catalog: full.catalog,
+    };
+  }
   subscribe(
     listener: (event: DomainEvent) => void,
     filter?: { project_id?: string; thread_id?: string },
@@ -297,7 +329,7 @@ export class OrchestratorEngine {
         timestamp: new Date().toISOString(),
         command_id: "system-subscribe-snapshot",
         kind: "SnapshotEmitted",
-        data: { snapshot: this.getSnapshot() },
+        data: { snapshot: this.getScopedSnapshot(filter) },
       };
       try {
         listener(structuredClone(snapshotEvent));
