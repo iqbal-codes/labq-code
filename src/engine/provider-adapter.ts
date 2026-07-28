@@ -4,6 +4,8 @@ import type {
   InteractionMode,
   ImageAttachment,
   ToolActivityStatus,
+  InputField,
+  PendingRequestResponse,
 } from "../domain/types.js";
 
 /**
@@ -18,7 +20,9 @@ export type CanonicalProviderEvent =
   | { kind: "tool_activity_completed"; activity_id: string; status: Exclude<ToolActivityStatus, "in_progress">; output?: unknown; error?: string }
   | { kind: "assistant_message_completed" }
   | { kind: "provider_turn_completed" }
-  | { kind: "provider_turn_failed"; code: string; detail: string };
+  | { kind: "provider_turn_failed"; code: string; detail: string }
+  | { kind: "approval_requested"; request_id: string; operation: string; description?: string }
+  | { kind: "input_requested"; request_id: string; operation: string; description?: string; fields: InputField[] };
 
 /**
  * Parameters for starting a turn on a provider.
@@ -36,6 +40,16 @@ export interface StartTurnParams {
   command_id: string;
   /** Signal to observe cancellation requests (interrupt/stop). */
   signal?: AbortSignal;
+}
+
+/**
+ * Parameters for responding to a pending approval or structured-input request.
+ */
+export interface RespondToRequestParams {
+  request_id: string;
+  turn_id: string;
+  thread_id: string;
+  response: PendingRequestResponse;
 }
 
 /**
@@ -66,6 +80,12 @@ export interface ProviderAdapter {
    * The caller must drain the iterable to completion.
    */
   startTurn(params: StartTurnParams): AsyncIterable<CanonicalProviderEvent>;
+
+  /**
+   * Respond to a pending approval or structured-input request.
+   * Routes the correlated result back to the provider, unblocking execution.
+   */
+  respondToRequest(params: RespondToRequestParams): Promise<void>;
 
   /**
    * Interrupt an active turn. Preserves the provider session if possible.

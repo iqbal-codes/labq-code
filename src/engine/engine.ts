@@ -221,6 +221,26 @@ export class OrchestratorEngine {
       }
     }
 
+    // 7. If this was respond_approval or respond_input, route the response
+    //    back through the provider service to unblock the provider stream
+    if (command.kind === "respond_approval" || command.kind === "respond_input") {
+      const active = this.activeTurns.get(command.turn_id);
+      if (active) {
+        const response =
+          command.kind === "respond_approval"
+            ? { decision: command.decision }
+            : { values: command.values };
+        this.providerService
+          .respondToRequest(active.providerName, {
+            request_id: command.request_id,
+            turn_id: command.turn_id,
+            thread_id: command.thread_id,
+            response,
+          })
+          .catch(() => {});
+      }
+    }
+
     return successResult;
   }
 
@@ -511,6 +531,54 @@ export class OrchestratorEngine {
           ),
         ];
       }
+      case "approval_requested": {
+        const request = {
+          id: providerEvent.request_id,
+          turn_id: turnId,
+          thread_id: command.kind === "start_turn" ? command.thread_id : "",
+          kind: "approval" as const,
+          operation: providerEvent.operation,
+          description: providerEvent.description,
+          fields: [],
+          status: "pending" as const,
+          created_at: ts,
+        };
+        return [
+          this.makeDomainEvent(
+            {
+              kind: "ApprovalRequested",
+              data: { turn_id: turnId, request },
+            },
+            turnId,
+            command,
+            ts
+          ),
+        ];
+      }
+      case "input_requested": {
+        const request = {
+          id: providerEvent.request_id,
+          turn_id: turnId,
+          thread_id: command.kind === "start_turn" ? command.thread_id : "",
+          kind: "input" as const,
+          operation: providerEvent.operation,
+          description: providerEvent.description,
+          fields: providerEvent.fields,
+          status: "pending" as const,
+          created_at: ts,
+        };
+        return [
+          this.makeDomainEvent(
+            {
+              kind: "InputRequested",
+              data: { turn_id: turnId, request },
+            },
+            turnId,
+            command,
+            ts
+          ),
+        ];
+      }
     }
   }
 
@@ -601,6 +669,9 @@ export class OrchestratorEngine {
       case "TurnCompleted":
       case "TurnFailed":
       case "TurnInterrupted":
+      case "ApprovalRequested":
+      case "InputRequested":
+      case "PendingRequestResolved":
         return { thread_id: event.data.turn_id ? this.snapshot.turns[event.data.turn_id]?.thread_id : undefined };
       default:
         return {};

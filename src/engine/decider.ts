@@ -5,6 +5,7 @@ import type {
   Project,
   Thread,
   Turn,
+  PendingRequestResponse,
 } from "../domain/types.js";
 import {
   validateImageAttachments,
@@ -25,7 +26,8 @@ export type EventDraft =
   | { kind: "ThreadSettled"; data: { thread_id: string } }
   | { kind: "ThreadDeleted"; data: { thread_id: string } }
   | { kind: "TurnQueued"; data: { turn: Turn } }
-  | { kind: "TurnInterrupted"; data: { turn_id: string } };
+  | { kind: "TurnInterrupted"; data: { turn_id: string } }
+  | { kind: "PendingRequestResolved"; data: { turn_id: string; request_id: string; response: PendingRequestResponse } };
 
 export type DeciderResult =
   | { ok: true; events: EventDraft[]; resultData: Record<string, unknown> }
@@ -435,6 +437,118 @@ export function decideCommand(
         ok: true,
         events: [{ kind: "TurnInterrupted", data: { turn_id: turn.id } }],
         resultData: { turn_id: turn.id, status: "interrupted" },
+      };
+    }
+
+    case "respond_approval": {
+      const turn = snapshot.turns[command.turn_id];
+      if (!turn) {
+        return {
+          ok: false,
+          code: "turn_not_found",
+          detail: `Turn '${command.turn_id}' does not exist.`,
+        };
+      }
+      if (turn.thread_id !== command.thread_id) {
+        return {
+          ok: false,
+          code: "turn_thread_mismatch",
+          detail: `Turn '${command.turn_id}' does not belong to thread '${command.thread_id}'.`,
+        };
+      }
+      if (turn.status !== "paused" || !turn.pending_request) {
+        return {
+          ok: false,
+          code: "no_pending_request",
+          detail: `Turn '${command.turn_id}' has no pending approval request.`,
+        };
+      }
+      if (turn.pending_request.id !== command.request_id) {
+        return {
+          ok: false,
+          code: "stale_request",
+          detail: `Request '${command.request_id}' does not match the current pending request '${turn.pending_request.id}'.`,
+        };
+      }
+      if (turn.pending_request.kind !== "approval") {
+        return {
+          ok: false,
+          code: "wrong_request_kind",
+          detail: `Request '${command.request_id}' is a '${turn.pending_request.kind}' request, not an approval request.`,
+        };
+      }
+      return {
+        ok: true,
+        events: [{
+          kind: "PendingRequestResolved",
+          data: {
+            turn_id: turn.id,
+            request_id: command.request_id,
+            response: { decision: command.decision },
+          },
+        }],
+        resultData: { turn_id: turn.id, request_id: command.request_id, status: "running" },
+      };
+    }
+
+    case "respond_input": {
+      const turn = snapshot.turns[command.turn_id];
+      if (!turn) {
+        return {
+          ok: false,
+          code: "turn_not_found",
+          detail: `Turn '${command.turn_id}' does not exist.`,
+        };
+      }
+      if (turn.thread_id !== command.thread_id) {
+        return {
+          ok: false,
+          code: "turn_thread_mismatch",
+          detail: `Turn '${command.turn_id}' does not belong to thread '${command.thread_id}'.`,
+        };
+      }
+      if (turn.status !== "paused" || !turn.pending_request) {
+        return {
+          ok: false,
+          code: "no_pending_request",
+          detail: `Turn '${command.turn_id}' has no pending input request.`,
+        };
+      }
+      if (turn.pending_request.id !== command.request_id) {
+        return {
+          ok: false,
+          code: "stale_request",
+          detail: `Request '${command.request_id}' does not match the current pending request '${turn.pending_request.id}'.`,
+        };
+      }
+      if (turn.pending_request.kind !== "input") {
+        return {
+          ok: false,
+          code: "wrong_request_kind",
+          detail: `Request '${command.request_id}' is a '${turn.pending_request.kind}' request, not an input request.`,
+        };
+      }
+      // Validate required fields
+      for (const field of turn.pending_request.fields) {
+        if (field.required && !(field.id in command.values)) {
+          return {
+            ok: false,
+            code: "missing_required_field",
+            detail: `Required field '${field.id}' (${field.label}) is missing from the response.`,
+          };
+        }
+      }
+      return {
+        ok: true,
+        events: [{
+          kind: "PendingRequestResolved",
+          data: {
+            turn_id: turn.id,
+            request_id: command.request_id,
+            response: { values: command.values },
+          },
+        }],
+        resultData: { turn_id: turn.id, request_id: command.request_id, status: "running" },
       };
     }
 
