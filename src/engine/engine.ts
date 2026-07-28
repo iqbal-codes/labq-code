@@ -9,6 +9,7 @@ import type {
   Turn,
   SyncResult,
 } from "../domain/types.js";
+import { boundChangeSummary } from "../domain/types.js";
 import type { CanonicalProviderEvent, StartTurnParams } from "./provider-adapter.js";
 import { SourceManager } from "../source/source-manager.js";
 import { decideCommand } from "./decider.js";
@@ -581,6 +582,23 @@ export class OrchestratorEngine {
           ),
         ];
       }
+      case "change_summary": {
+        const summary = boundChangeSummary({
+          ...providerEvent.summary,
+          turn_id: turnId,
+        });
+        return [
+          this.makeDomainEvent(
+            {
+              kind: "ChangeSummaryEmitted",
+              data: { turn_id: turnId, summary },
+            },
+            turnId,
+            command,
+            ts
+          ),
+        ];
+      }
     }
   }
 
@@ -686,6 +704,7 @@ export class OrchestratorEngine {
       case "ApprovalRequested":
       case "InputRequested":
       case "PendingRequestResolved":
+      case "ChangeSummaryEmitted":
         return { thread_id: event.data.turn_id ? this.snapshot.turns[event.data.turn_id]?.thread_id : undefined };
       default:
         return {};

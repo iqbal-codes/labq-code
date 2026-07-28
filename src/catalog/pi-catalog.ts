@@ -3,7 +3,42 @@ import {
   PiModelId,
   RuntimeAccessProfile,
   InteractionMode,
+  ProviderCapabilities,
+  ProviderCapability,
+  CapabilityKind,
+  Turn,
+  TurnReviewState,
 } from "../domain/types.js";
+
+export const PI_PROVIDER_CAPABILITIES: ProviderCapabilities = {
+  provider_name: "pi",
+  capabilities: {
+    plan_mode: {
+      kind: "plan_mode",
+      supported: false,
+      read_only: true,
+      description: "Plan workflow mode is unsupported in Pi v1 delivery.",
+    },
+    diff: {
+      kind: "diff",
+      supported: true,
+      read_only: true,
+      description: "Read-only turn-associated change summaries derived from tool activity.",
+    },
+    checkpoint: {
+      kind: "checkpoint",
+      supported: false,
+      read_only: true,
+      description: "Transactional checkpoints are unsupported in Pi v1 delivery.",
+    },
+    rollback: {
+      kind: "rollback",
+      supported: false,
+      read_only: true,
+      description: "Rollback operations are unsupported in Pi v1 delivery.",
+    },
+  },
+};
 
 export const DEFAULT_PI_CATALOG: CuratedPiCatalog = {
   models: [
@@ -61,6 +96,7 @@ export const DEFAULT_PI_CATALOG: CuratedPiCatalog = {
       description: "Plan workflow mode is unsupported in Pi v1 delivery.",
     },
   ],
+  capabilities: Object.values(PI_PROVIDER_CAPABILITIES.capabilities),
 };
 
 export function validateModel(
@@ -83,4 +119,64 @@ export function validateInteractionMode(
 ): mode is InteractionMode {
   const item = catalog.interaction_modes.find((m) => m.mode === mode);
   return item !== undefined && item.supported;
+}
+
+export function getPiProviderCapabilities(): ProviderCapabilities {
+  return structuredClone(PI_PROVIDER_CAPABILITIES);
+}
+
+export function isCapabilitySupported(
+  capability: CapabilityKind,
+  catalog: CuratedPiCatalog = DEFAULT_PI_CATALOG
+): boolean {
+  const cap = catalog.capabilities.find((c) => c.kind === capability);
+  return cap !== undefined ? cap.supported : false;
+}
+
+export function deriveTurnReviewState(
+  turn: Turn,
+  catalog: CuratedPiCatalog = DEFAULT_PI_CATALOG
+): TurnReviewState {
+  const unsupported = catalog.capabilities
+    .filter((c) => !c.supported)
+    .map((c) => c.kind);
+
+  return {
+    turn_id: turn.id,
+    read_only: true,
+    supports_checkpoint: false,
+    supports_rollback: false,
+    change_summary: turn.change_summary,
+    unsupported_operations: unsupported,
+  };
+}
+
+export function canPerformRollback(
+  _turn: Turn,
+  _catalog: CuratedPiCatalog = DEFAULT_PI_CATALOG
+): { allowed: false; reason: string } {
+  return {
+    allowed: false,
+    reason: "Rollback operation is unsupported in Pi v1. Turn review state is read-only.",
+  };
+}
+
+export function canPerformCheckpoint(
+  _turn: Turn,
+  _catalog: CuratedPiCatalog = DEFAULT_PI_CATALOG
+): { allowed: false; reason: string } {
+  return {
+    allowed: false,
+    reason: "Transactional checkpoints are unsupported in Pi v1.",
+  };
+}
+
+export function canUsePlanMode(
+  catalog: CuratedPiCatalog = DEFAULT_PI_CATALOG
+): { allowed: false; reason: string } {
+  const planCap = catalog.capabilities.find((c) => c.kind === "plan_mode");
+  return {
+    allowed: false,
+    reason: planCap?.description ?? "Plan workflow mode is unsupported in Pi v1 delivery.",
+  };
 }

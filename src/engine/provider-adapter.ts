@@ -6,8 +6,8 @@ import type {
   ToolActivityStatus,
   InputField,
   PendingRequestResponse,
+  ChangeSummary,
 } from "../domain/types.js";
-
 /**
  * Canonical provider event — normalized from any provider's SDK events.
  * Raw provider payloads never cross into orchestration state.
@@ -22,7 +22,8 @@ export type CanonicalProviderEvent =
   | { kind: "provider_turn_completed" }
   | { kind: "provider_turn_failed"; code: string; detail: string }
   | { kind: "approval_requested"; request_id: string; operation: string; description?: string }
-  | { kind: "input_requested"; request_id: string; operation: string; description?: string; fields: InputField[] };
+  | { kind: "input_requested"; request_id: string; operation: string; description?: string; fields: InputField[] }
+  | { kind: "change_summary"; turn_id?: string; summary: ChangeSummary };
 
 /**
  * Parameters for starting a turn on a provider.
