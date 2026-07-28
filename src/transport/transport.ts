@@ -1,4 +1,4 @@
-import type { Command, DomainEvent, Snapshot, SyncResult, CommandResult } from "../domain/types.js";
+import type { Command, DomainEvent, Snapshot, SyncResult, CommandResult, ProjectionFailure, ProtocolDiagnosticEntry } from "../domain/types.js";
 import { OrchestratorEngine } from "../engine/engine.js";
 
 export interface WireCommandMessage {
@@ -208,5 +208,42 @@ export class OrchestratorTransport {
     }
 
     return this.engine.getScopedSnapshot(scope);
+  }
+
+  getProjectionFailures(token?: string): ProjectionFailure[] | { ok: false; code: string; detail: string } {
+    if (this.authorize && !this.authorize(token, "read")) {
+      return {
+        ok: false,
+        code: "unauthorized",
+        detail: "Authorization denied for projection failures query.",
+      };
+    }
+    return this.engine.getProjectionFailures();
+  }
+
+  retryProjectionFailures(token?: string): { ok: true; retried_count: number; resolved_count: number } | { ok: false; code: string; detail: string } {
+    if (this.authorize && !this.authorize(token, "mutate")) {
+      return {
+        ok: false,
+        code: "unauthorized",
+        detail: "Authorization denied for retrying projection failures.",
+      };
+    }
+    const res = this.engine.retryProjectionFailures();
+    return { ok: true, ...res };
+  }
+
+  getProtocolDiagnostics(
+    token?: string,
+    filter?: { project_id?: string; thread_id?: string; turn_id?: string }
+  ): ProtocolDiagnosticEntry[] | { ok: false; code: string; detail: string } {
+    if (this.authorize && !this.authorize(token, "read", filter)) {
+      return {
+        ok: false,
+        code: "unauthorized",
+        detail: "Authorization denied for diagnostics query.",
+      };
+    }
+    return this.engine.getProtocolDiagnostics(filter);
   }
 }

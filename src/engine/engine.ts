@@ -8,6 +8,10 @@ import type {
   Thread,
   Turn,
   SyncResult,
+  ProjectionFailure,
+  RetentionPolicy,
+  ProtocolDiagnosticEntry,
+  ErrorMetadata,
 } from "../domain/types.js";
 import { boundChangeSummary } from "../domain/types.js";
 import { sanitizeErrorMetadata, type CanonicalProviderEvent, type StartTurnParams } from "./provider-adapter.js";
@@ -44,15 +48,21 @@ export class OrchestratorEngine {
   private dispatchQueue: Promise<unknown> = Promise.resolve();
   private providerService: ProviderService;
   private activeTurns: Map<string, ActiveTurnStream> = new Map();
+  private projectionFailures: ProjectionFailure[] = [];
+  private retentionPolicy?: RetentionPolicy;
 
-  constructor(sourceManager?: SourceManager, providerService?: ProviderService) {
+  constructor(
+    sourceManager?: SourceManager,
+    providerService?: ProviderService,
+    retentionPolicy?: RetentionPolicy
+  ) {
     this.sourceManager = sourceManager || new SourceManager();
     const ps = providerService || new ProviderService();
-    // Register the default Pi adapter only when no provider service was injected
     if (!providerService) {
       ps.registerAdapter("pi", new PiAdapter());
     }
     this.providerService = ps;
+    this.retentionPolicy = retentionPolicy;
     this.snapshot = createInitialSnapshot(DEFAULT_PI_CATALOG);
   }
 
@@ -173,7 +183,7 @@ export class OrchestratorEngine {
       sequences.push(seq);
       newEvents.push(domainEvent);
       this.events.push(domainEvent);
-      this.snapshot = applyEvent(this.snapshot, domainEvent);
+      this.safeApplyEvent(domainEvent);
 
       // Capture turn_id from TurnQueued for streaming kickoff
       if (draft.kind === "TurnQueued") {
@@ -419,7 +429,7 @@ export class OrchestratorEngine {
    */
   private appendStreamEvent(event: DomainEvent): void {
     this.events.push(event);
-    this.snapshot = applyEvent(this.snapshot, event);
+    this.safeApplyEvent(event);
     this.notifyListeners(event);
   }
 
@@ -740,8 +750,106 @@ export class OrchestratorEngine {
     return receipt ? structuredClone(receipt) : undefined;
   }
 
-  rebuildSnapshotFromHistory(): Snapshot {
-    return rebuildSnapshot(this.events, this.snapshot.catalog);
+  rebuildSnapshotFromHistory(policy?: RetentionPolicy): Snapshot {
+    return rebuildSnapshot(this.events, this.snapshot.catalog, policy || this.retentionPolicy);
+  }
+
+  getProjectionFailures(): ProjectionFailure[] {
+    return structuredClone(this.projectionFailures);
+  }
+
+  retryProjectionFailures(): { retried_count: number; resolved_count: number } {
+    const unresolved = this.projectionFailures.filter((f) => !f.resolved);
+    const retriedCount = unresolved.length;
+    if (retriedCount === 0) {
+      return { retried_count: 0, resolved_count: 0 };
+    }
+
+    for (const failure of unresolved) {
+      failure.retried = true;
+    }
+
+    try {
+      const rebuilt = rebuildSnapshot(this.events, this.snapshot.catalog, this.retentionPolicy);
+      this.snapshot = rebuilt;
+      for (const failure of unresolved) {
+        failure.resolved = true;
+      }
+      return { retried_count: retriedCount, resolved_count: retriedCount };
+    } catch (err: unknown) {
+      return { retried_count: retriedCount, resolved_count: 0 };
+    }
+  }
+
+  getProtocolDiagnostics(filter?: { project_id?: string; thread_id?: string; turn_id?: string }): ProtocolDiagnosticEntry[] {
+    const diagnostics: ProtocolDiagnosticEntry[] = [];
+    for (const event of this.events) {
+      const data = (event.data || {}) as Record<string, unknown>;
+      const projId = typeof data.project_id === "string" ? data.project_id : undefined;
+      const threadId = typeof data.thread_id === "string" ? data.thread_id : undefined;
+      const turnId = typeof data.turn_id === "string" ? data.turn_id : undefined;
+
+      if (filter?.project_id && projId !== filter.project_id) continue;
+      if (filter?.thread_id && threadId !== filter.thread_id) continue;
+      if (filter?.turn_id && turnId !== filter.turn_id) continue;
+
+      let requestId: string | undefined;
+      if ("request" in data && data.request && typeof data.request === "object" && "id" in data.request && typeof data.request.id === "string") {
+        requestId = data.request.id;
+      } else if ("request_id" in data && typeof data.request_id === "string") {
+        requestId = data.request_id;
+      }
+
+      let errMeta: ErrorMetadata | undefined;
+      if (
+        event.kind === "TurnFailed" &&
+        "error" in data &&
+        data.error &&
+        typeof data.error === "object" &&
+        "code" in data.error &&
+        "detail" in data.error
+      ) {
+        const errObj = data.error as Record<string, unknown>;
+        errMeta = {
+          code: String(errObj.code),
+          detail: String(errObj.detail),
+        };
+      }
+
+      diagnostics.push({
+        sequence: event.sequence,
+        event_id: event.event_id,
+        event_kind: event.kind,
+        timestamp: event.timestamp,
+        command_id: event.command_id,
+        correlation_id: event.correlation_id || event.command_id,
+        causation_id: event.causation_id,
+        provider: "pi",
+        request_id: requestId,
+        project_id: projId,
+        thread_id: threadId,
+        turn_id: turnId,
+        error: errMeta,
+      });
+    }
+    return diagnostics;
+  }
+
+  private safeApplyEvent(event: DomainEvent): void {
+    try {
+      this.snapshot = applyEvent(this.snapshot, event, this.retentionPolicy);
+    } catch (err: unknown) {
+      const errorMeta = sanitizeErrorMetadata(err);
+      this.projectionFailures.push({
+        event_id: event.event_id,
+        sequence: event.sequence,
+        event_kind: event.kind,
+        error: errorMeta,
+        timestamp: new Date().toISOString(),
+        retried: false,
+        resolved: false,
+      });
+    }
   }
 
   getProject(projectId: string, includeDeleted = false): Project | undefined {

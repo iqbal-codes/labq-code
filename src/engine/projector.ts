@@ -1,5 +1,5 @@
-import type { Snapshot, DomainEvent, CuratedPiCatalog, Turn, ToolActivityStatus, ChangeSummary, FileChangeSummary, ToolActivity, PendingRequestStatus } from "../domain/types.js";
-import { boundChangeSummary } from "../domain/types.js";
+import type { Snapshot, DomainEvent, CuratedPiCatalog, Turn, ToolActivityStatus, ChangeSummary, FileChangeSummary, ToolActivity, PendingRequestStatus, RetentionPolicy } from "../domain/types.js";
+import { boundChangeSummary, DEFAULT_RETENTION_POLICY } from "../domain/types.js";
 import { DEFAULT_PI_CATALOG } from "../catalog/pi-catalog.js";
 
 export function deriveChangeSummaryFromToolActivities(
@@ -73,9 +73,125 @@ export function createInitialSnapshot(
   };
 }
 
+function truncateField(val: string | undefined, maxBytes: number, label: string): { val: string | undefined; modified: boolean } {
+  if (typeof val === "string" && val.length > maxBytes) {
+    return { val: val.slice(0, maxBytes) + `\n... [${label} truncated]`, modified: true };
+  }
+  return { val, modified: false };
+}
+
+export function applyRetentionPolicy(
+  snapshot: Snapshot,
+  policy: RetentionPolicy = DEFAULT_RETENTION_POLICY
+): Snapshot {
+  const next: Snapshot = {
+    ...snapshot,
+    turns: { ...snapshot.turns },
+    threads: { ...snapshot.threads },
+  };
+  const {
+    max_activities_per_turn = DEFAULT_RETENTION_POLICY.max_activities_per_turn!,
+    max_completed_turns_per_thread = DEFAULT_RETENTION_POLICY.max_completed_turns_per_thread!,
+    max_activity_content_bytes = DEFAULT_RETENTION_POLICY.max_activity_content_bytes!,
+    max_message_part_bytes = DEFAULT_RETENTION_POLICY.max_message_part_bytes!,
+  } = policy;
+
+  for (const [turnId, turn] of Object.entries(next.turns)) {
+    let modified = false;
+    let activities = turn.activities;
+    let assistantMessage = turn.assistant_message;
+
+    if (assistantMessage && assistantMessage.parts.length > 0) {
+      let msgModified = false;
+      const parts = assistantMessage.parts.map((p) => {
+        if (p.kind === "text") {
+          const trunc = truncateField(p.content, max_message_part_bytes, "text");
+          if (trunc.modified) {
+            msgModified = true;
+            return { ...p, content: trunc.val! };
+          }
+        }
+        return p;
+      });
+      if (msgModified) {
+        assistantMessage = { ...assistantMessage, parts };
+        modified = true;
+      }
+    }
+
+    if (activities) {
+      const newActivities: Record<string, ToolActivity> = {};
+      for (const [actId, act] of Object.entries(activities)) {
+        const truncOut = truncateField(typeof act.output === "string" ? act.output : undefined, max_activity_content_bytes, "output");
+        const truncErr = truncateField(act.error, max_activity_content_bytes, "error");
+
+        if (truncOut.modified || truncErr.modified) {
+          newActivities[actId] = {
+            ...act,
+            output: truncOut.modified ? truncOut.val : act.output,
+            error: truncErr.modified ? truncErr.val : act.error,
+          };
+          modified = true;
+        } else {
+          newActivities[actId] = act;
+        }
+      }
+      activities = newActivities;
+    }
+
+    if (activities && Object.keys(activities).length > max_activities_per_turn) {
+      const actEntries = Object.entries(activities);
+      const mandatoryActs = actEntries.filter(
+        ([_, a]) => a.status === "in_progress" || a.status === "failure" || a.status === "decline"
+      );
+      const optionalActs = actEntries.filter(
+        ([_, a]) => a.status === "success" || a.status === "interrupted"
+      );
+
+      const allowedOptionalCount = Math.max(0, max_activities_per_turn - mandatoryActs.length);
+      const retainedOptionalActs = optionalActs.slice(-allowedOptionalCount);
+
+      const prunedActivities: Record<string, ToolActivity> = {};
+      for (const [id, act] of [...mandatoryActs, ...retainedOptionalActs]) {
+        prunedActivities[id] = act;
+      }
+      activities = prunedActivities;
+      modified = true;
+    }
+
+    if (modified) {
+      next.turns[turnId] = {
+        ...turn,
+        activities,
+        assistant_message: assistantMessage,
+      };
+    }
+  }
+
+  for (const threadId of Object.keys(next.threads)) {
+    const threadTurns = Object.values(next.turns).filter((t) => t.thread_id === threadId);
+    const latestTurn = threadTurns.slice().sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""))[0];
+    const completedTurns = threadTurns.filter(
+      (t) => t.status === "completed" && t.id !== latestTurn?.id
+    );
+    if (completedTurns.length > max_completed_turns_per_thread) {
+      completedTurns.sort((a, b) => (a.created_at || "").localeCompare(b.created_at || ""));
+      const excessCount = completedTurns.length - max_completed_turns_per_thread;
+      const toRemove = completedTurns.slice(0, excessCount);
+
+      for (const t of toRemove) {
+        delete next.turns[t.id];
+      }
+    }
+  }
+
+  return next;
+}
+
 export function applyEvent(
   snapshot: Snapshot,
-  event: DomainEvent
+  event: DomainEvent,
+  retentionPolicy?: RetentionPolicy
 ): Snapshot {
   // Create a shallow copy with fresh object maps to preserve immutability
   const next: Snapshot = {
@@ -537,16 +653,17 @@ export function applyEvent(
     }
   }
 
-  return next;
+  return retentionPolicy ? applyRetentionPolicy(next, retentionPolicy) : next;
 }
 
 export function rebuildSnapshot(
   events: DomainEvent[],
-  catalog: CuratedPiCatalog = DEFAULT_PI_CATALOG
+  catalog: CuratedPiCatalog = DEFAULT_PI_CATALOG,
+  retentionPolicy?: RetentionPolicy
 ): Snapshot {
   let snapshot = createInitialSnapshot(catalog);
   for (const event of events) {
-    snapshot = applyEvent(snapshot, event);
+    snapshot = applyEvent(snapshot, event, retentionPolicy);
   }
   return snapshot;
 }

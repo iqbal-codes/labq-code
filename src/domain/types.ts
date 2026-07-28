@@ -371,3 +371,49 @@ export type SyncResult =
   | { ok: true; mode: "up_to_date"; sequence: number }
   | { ok: true; mode: "replay"; from: number; to: number; events: DomainEvent[] }
   | { ok: true; mode: "snapshot"; sequence: number; snapshot: Snapshot; reason?: string };
+// Projection Failure & Retention Bounds
+export interface ErrorMetadata {
+  code: string;
+  detail: string;
+}
+
+export interface ProjectionFailure {
+  event_id: string;
+  sequence: number;
+  event_kind: string;
+  error: ErrorMetadata;
+  timestamp: string;
+  retried: boolean;
+  resolved: boolean;
+}
+
+export interface RetentionPolicy {
+  max_activities_per_turn?: number;
+  max_completed_turns_per_thread?: number;
+  max_activity_content_bytes?: number;
+  max_message_part_bytes?: number;
+}
+
+export const DEFAULT_RETENTION_POLICY: RetentionPolicy = {
+  max_activities_per_turn: 100,
+  max_completed_turns_per_thread: 50,
+  max_activity_content_bytes: 32 * 1024,
+  max_message_part_bytes: 64 * 1024,
+};
+
+// Protocol Diagnostics
+export interface ProtocolDiagnosticEntry {
+  sequence: number;
+  event_id: string;
+  event_kind: string;
+  timestamp: string;
+  command_id: string;
+  correlation_id: string;
+  causation_id?: string;
+  provider?: string;
+  request_id?: string;
+  thread_id?: string;
+  turn_id?: string;
+  project_id?: string;
+  error?: ErrorMetadata;
+}
