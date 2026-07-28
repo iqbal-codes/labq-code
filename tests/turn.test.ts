@@ -10,6 +10,7 @@ import type {
   StartTurnParams,
   InterruptTurnParams,
   StopTurnParams,
+  RespondToRequestParams,
 } from "../src/engine/provider-adapter.js";
 import {
   validateImageBounds,
@@ -38,6 +39,7 @@ class TestProviderAdapter implements ProviderAdapter {
   }
 
   async interruptTurn(_params: InterruptTurnParams): Promise<void> {}
+  async respondToRequest(_params: RespondToRequestParams): Promise<void> {}
   async stopTurn(_params: StopTurnParams): Promise<void> {}
 }
 
@@ -62,6 +64,7 @@ class DelayedTestProviderAdapter implements ProviderAdapter {
   }
 
   async interruptTurn(_params: InterruptTurnParams): Promise<void> {}
+  async respondToRequest(_params: RespondToRequestParams): Promise<void> {}
   async stopTurn(_params: StopTurnParams): Promise<void> {}
 }
 

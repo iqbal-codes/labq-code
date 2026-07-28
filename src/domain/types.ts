@@ -129,10 +129,56 @@ export interface Turn {
   user_message: UserMessageContent;
   assistant_message?: AssistantMessage;
   activities: Record<string, ToolActivity>;
+  pending_request?: PendingRequest;
   created_at: string;
   updated_at: string;
   error?: { code: string; detail: string };
 }
+
+// Pending request types
+export type InputFieldType = "text" | "multiline_text" | "number" | "boolean" | "select";
+
+export interface SelectOption {
+  value: string;
+  label: string;
+}
+
+export interface InputField {
+  id: string;
+  type: InputFieldType;
+  label: string;
+  required: boolean;
+  default_value?: string | number | boolean;
+  options?: SelectOption[];
+  placeholder?: string;
+}
+
+export type PendingRequestKind = "approval" | "input";
+export type PendingRequestStatus = "pending" | "approved" | "declined" | "answered";
+
+export interface PendingRequest {
+  id: string;
+  turn_id: string;
+  thread_id: string;
+  kind: PendingRequestKind;
+  operation: string;
+  description?: string;
+  fields: InputField[];
+  status: PendingRequestStatus;
+  response?: PendingRequestResponse;
+  created_at: string;
+  resolved_at?: string;
+}
+
+export interface ApprovalResponse {
+  decision: "approved" | "declined";
+}
+
+export interface StructuredInputResponse {
+  values: Record<string, string | number | boolean>;
+}
+
+export type PendingRequestResponse = ApprovalResponse | StructuredInputResponse;
 
 // Image bounds constants
 export const MAX_IMAGE_COUNT = 5;
@@ -176,7 +222,9 @@ export type Command =
   | ({ kind: "delete_thread"; thread_id: string } & CommandMeta)
   | ({ kind: "start_turn"; thread_id: string; content: UserMessageContent; turn_id?: string } & CommandMeta)
   | ({ kind: "interrupt_turn"; turn_id: string; thread_id: string } & CommandMeta)
-  | ({ kind: "stop_turn"; turn_id: string; thread_id: string } & CommandMeta);
+  | ({ kind: "stop_turn"; turn_id: string; thread_id: string } & CommandMeta)
+  | ({ kind: "respond_approval"; turn_id: string; thread_id: string; request_id: string; decision: "approved" | "declined" } & CommandMeta)
+  | ({ kind: "respond_input"; turn_id: string; thread_id: string; request_id: string; values: Record<string, string | number | boolean> } & CommandMeta);
 
 // Events
 export interface DomainEventMeta {
@@ -208,7 +256,10 @@ export type DomainEvent =
   | ({ kind: "TurnPaused"; data: { turn_id: string } } & DomainEventMeta)
   | ({ kind: "TurnCompleted"; data: { turn_id: string } } & DomainEventMeta)
   | ({ kind: "TurnFailed"; data: { turn_id: string; error: { code: string; detail: string } } } & DomainEventMeta)
-  | ({ kind: "TurnInterrupted"; data: { turn_id: string } } & DomainEventMeta);
+  | ({ kind: "TurnInterrupted"; data: { turn_id: string } } & DomainEventMeta)
+  | ({ kind: "ApprovalRequested"; data: { turn_id: string; request: PendingRequest } } & DomainEventMeta)
+  | ({ kind: "InputRequested"; data: { turn_id: string; request: PendingRequest } } & DomainEventMeta)
+  | ({ kind: "PendingRequestResolved"; data: { turn_id: string; request_id: string; response: PendingRequestResponse } } & DomainEventMeta);
 
 // Command Results & Receipts
 export type CommandSuccess = {

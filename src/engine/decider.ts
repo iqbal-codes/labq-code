@@ -5,9 +5,12 @@ import type {
   Project,
   Thread,
   Turn,
+  PendingRequest,
+  PendingRequestResponse,
 } from "../domain/types.js";
 import {
   validateImageAttachments,
+  InputField,
 } from "../domain/types.js";
 import {
   validateModel,
@@ -25,11 +28,80 @@ export type EventDraft =
   | { kind: "ThreadSettled"; data: { thread_id: string } }
   | { kind: "ThreadDeleted"; data: { thread_id: string } }
   | { kind: "TurnQueued"; data: { turn: Turn } }
-  | { kind: "TurnInterrupted"; data: { turn_id: string } };
+  | { kind: "TurnInterrupted"; data: { turn_id: string } }
+  | { kind: "PendingRequestResolved"; data: { turn_id: string; request_id: string; response: PendingRequestResponse } };
 
 export type DeciderResult =
   | { ok: true; events: EventDraft[]; resultData: Record<string, unknown> }
   | { ok: false; code: string; detail: string };
+
+/**
+ * Shared validation for respond_approval and respond_input commands.
+ * Checks: turn exists, thread_id matches, turn is paused with a pending request,
+ * request_id matches, and request kind matches the expected kind.
+ */
+function validatePendingRequest(
+  snapshot: Snapshot,
+  turnId: string,
+  threadId: string,
+  requestId: string,
+  expectedKind: "approval" | "input"
+): DeciderResult {
+  const turn = snapshot.turns[turnId];
+  if (!turn) {
+    return { ok: false, code: "turn_not_found", detail: `Turn '${turnId}' does not exist.` };
+  }
+  if (turn.thread_id !== threadId) {
+    return { ok: false, code: "turn_thread_mismatch", detail: `Turn '${turnId}' does not belong to thread '${threadId}'.` };
+  }
+  if (turn.status !== "paused" || !turn.pending_request) {
+    return { ok: false, code: "no_pending_request", detail: `Turn '${turnId}' has no pending ${expectedKind} request.` };
+  }
+  if (turn.pending_request.id !== requestId) {
+    return { ok: false, code: "stale_request", detail: `Request '${requestId}' does not match the current pending request '${turn.pending_request.id}'.` };
+  }
+  if (turn.pending_request.kind !== expectedKind) {
+    return { ok: false, code: "wrong_request_kind", detail: `Request '${requestId}' is a '${turn.pending_request.kind}' request, not an ${expectedKind} request.` };
+  }
+  return { ok: true, events: [], resultData: {} };
+}
+
+/**
+ * Validate a single input field's value against its declared type and options.
+ */
+function validateFieldValue(
+  field: InputField,
+  value: unknown
+): DeciderResult | null {
+  switch (field.type) {
+    case "text":
+    case "multiline_text":
+      if (typeof value !== "string") {
+        return { ok: false, code: "invalid_field_type", detail: `Field '${field.id}' (${field.label}) expects a string, got ${typeof value}.` };
+      }
+      break;
+    case "number":
+      if (typeof value !== "number") {
+        return { ok: false, code: "invalid_field_type", detail: `Field '${field.id}' (${field.label}) expects a number, got ${typeof value}.` };
+      }
+      break;
+    case "boolean":
+      if (typeof value !== "boolean") {
+        return { ok: false, code: "invalid_field_type", detail: `Field '${field.id}' (${field.label}) expects a boolean, got ${typeof value}.` };
+      }
+      break;
+    case "select": {
+      if (typeof value !== "string") {
+        return { ok: false, code: "invalid_field_type", detail: `Field '${field.id}' (${field.label}) expects a string, got ${typeof value}.` };
+      }
+      if (field.options && !field.options.some((o) => o.value === value)) {
+        return { ok: false, code: "invalid_field_option", detail: `Field '${field.id}' (${field.label}) value '${value}' is not one of the valid options: ${field.options.map((o) => o.value).join(", ")}.` };
+      }
+      break;
+    }
+  }
+  return null;
+}
 
 export function decideCommand(
   snapshot: Snapshot,
@@ -435,6 +507,66 @@ export function decideCommand(
         ok: true,
         events: [{ kind: "TurnInterrupted", data: { turn_id: turn.id } }],
         resultData: { turn_id: turn.id, status: "interrupted" },
+      };
+    }
+
+    case "respond_approval": {
+      const baseCheck = validatePendingRequest(
+        snapshot, command.turn_id, command.thread_id, command.request_id, "approval"
+      );
+      if (!baseCheck.ok) return baseCheck;
+      return {
+        ok: true,
+        events: [{
+          kind: "PendingRequestResolved",
+          data: {
+            turn_id: command.turn_id,
+            request_id: command.request_id,
+            response: { decision: command.decision },
+          },
+        }],
+        resultData: { turn_id: command.turn_id, request_id: command.request_id, status: "running" },
+      };
+    }
+
+    case "respond_input": {
+      const baseCheck = validatePendingRequest(
+        snapshot, command.turn_id, command.thread_id, command.request_id, "input"
+      );
+      if (!baseCheck.ok) return baseCheck;
+
+      const turn = snapshot.turns[command.turn_id]!;
+
+      // Validate required fields
+      for (const field of turn.pending_request!.fields) {
+        if (field.required && !(field.id in command.values)) {
+          return {
+            ok: false,
+            code: "missing_required_field",
+            detail: `Required field '${field.id}' (${field.label}) is missing from the response.`,
+          };
+        }
+      }
+
+      // Validate field value types and select options
+      for (const field of turn.pending_request!.fields) {
+        if (!(field.id in command.values)) continue; // optional absent field is fine
+        const value = command.values[field.id];
+        const typeError = validateFieldValue(field, value);
+        if (typeError) return typeError;
+      }
+
+      return {
+        ok: true,
+        events: [{
+          kind: "PendingRequestResolved",
+          data: {
+            turn_id: command.turn_id,
+            request_id: command.request_id,
+            response: { values: command.values },
+          },
+        }],
+        resultData: { turn_id: command.turn_id, request_id: command.request_id, status: "running" },
       };
     }
 

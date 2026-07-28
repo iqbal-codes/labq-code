@@ -3,9 +3,10 @@ import type {
   StartTurnParams,
   InterruptTurnParams,
   StopTurnParams,
+  RespondToRequestParams,
   ProviderAdapter,
 } from "./provider-adapter.js";
-import type { ToolActivityStatus, RuntimeAccessProfile } from "../domain/types.js";
+import type { ToolActivityStatus, RuntimeAccessProfile, InputField } from "../domain/types.js";
 import { validateImageAttachments } from "../domain/types.js";
 
 /**
@@ -78,6 +79,29 @@ export function normalizeFailure(code: string, detail: string): CanonicalProvide
 }
 
 /**
+ * Normalize a Pi SDK approval request into a canonical provider event.
+ */
+export function normalizeApprovalRequested(
+  requestId: string,
+  operation: string,
+  description?: string
+): CanonicalProviderEvent {
+  return { kind: "approval_requested", request_id: requestId, operation, description };
+}
+
+/**
+ * Normalize a Pi SDK structured-input request into a canonical provider event.
+ */
+export function normalizeInputRequested(
+  requestId: string,
+  operation: string,
+  fields: InputField[],
+  description?: string
+): CanonicalProviderEvent {
+  return { kind: "input_requested", request_id: requestId, operation, description, fields };
+}
+
+/**
  * Validate image attachments against bounds (max 5 images, max 20 MiB total).
  * Returns a validation error message, or null if valid.
  */
@@ -134,6 +158,11 @@ export class PiAdapter implements ProviderAdapter {
   async interruptTurn(_params: InterruptTurnParams): Promise<void> {
     // In production, would call session.abort() or similar
     // to interrupt the active Pi operation while preserving the session.
+  }
+
+  async respondToRequest(_params: RespondToRequestParams): Promise<void> {
+    // In production, would route the correlated result back to the Pi SDK
+    // via the server-mediated custom tool result, unblocking the provider stream.
   }
 
   async stopTurn(_params: StopTurnParams): Promise<void> {

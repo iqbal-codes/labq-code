@@ -354,6 +354,40 @@ export function applyEvent(
       });
       break;
     }
+    case "ApprovalRequested":
+    case "InputRequested": {
+      const turn = next.turns[event.data.turn_id];
+      if (!turn) break;
+      next.turns[turn.id] = structuredClone({
+        ...turn,
+        status: "paused",
+        updated_at: event.timestamp,
+        pending_request: structuredClone(event.data.request),
+      });
+      break;
+    }
+    case "PendingRequestResolved": {
+      const turn = next.turns[event.data.turn_id];
+      if (!turn) break;
+      const pendingRequest = turn.pending_request;
+      if (!pendingRequest || pendingRequest.id !== event.data.request_id) break;
+      const responseStatus =
+        "decision" in event.data.response
+          ? event.data.response.decision
+          : "answered";
+      next.turns[turn.id] = structuredClone({
+        ...turn,
+        status: "running",
+        updated_at: event.timestamp,
+        pending_request: {
+          ...pendingRequest,
+          status: responseStatus,
+          response: event.data.response,
+          resolved_at: event.timestamp,
+        },
+      });
+      break;
+    }
   }
 
   return next;

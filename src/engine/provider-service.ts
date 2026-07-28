@@ -4,6 +4,7 @@ import type {
   StartTurnParams,
   InterruptTurnParams,
   StopTurnParams,
+  RespondToRequestParams,
 } from "./provider-adapter.js";
 import type {
   PiModelId,
@@ -85,6 +86,19 @@ export class ProviderService {
     const adapter = this.adapters.get(providerName);
     if (!adapter) return;
     return adapter.stopTurn(params);
+  }
+
+  /**
+   * Respond to a pending approval or structured-input request.
+   * Routes the correlated result back through the provider adapter.
+   */
+  async respondToRequest(
+    providerName: string,
+    params: RespondToRequestParams
+  ): Promise<void> {
+    const adapter = this.adapters.get(providerName);
+    if (!adapter) return;
+    return adapter.respondToRequest(params);
   }
 
   private async *singleEventIterable(
