@@ -49,6 +49,14 @@ export class SourceManager {
   ): Promise<
     { ok: true; source: ProjectSource } | { ok: false; code: string; detail: string }
   > {
+    if (!source || typeof source !== "object") {
+      return {
+        ok: false,
+        code: "invalid_source",
+        detail: "Source descriptor must be a non-null object.",
+      };
+    }
+
     if (options?.signal?.aborted) {
       return {
         ok: false,
@@ -56,7 +64,6 @@ export class SourceManager {
         detail: "Managed acquisition was canceled.",
       };
     }
-
     if (source.kind === "local_folder") {
       if (typeof source.path !== "string" || !source.path.trim()) {
         return {
@@ -153,23 +160,31 @@ export class SourceManager {
       };
     }
 
-    // Hosted source kinds remain visible as setup-required until configured
-    const repoLocator = typeof source.repo === "string" ? source.repo.trim() : "";
-    if (!repoLocator) {
+    const hostedKinds = ["github", "azure_devops", "bitbucket", "gitlab"];
+    if (hostedKinds.includes(source.kind)) {
+      const repoLocator = typeof source.repo === "string" ? source.repo.trim() : "";
+      if (!repoLocator) {
+        return {
+          ok: false,
+          code: "invalid_source",
+          detail: `Hosted source '${source.kind}' requires a non-empty repository locator string.`,
+        };
+      }
+
       return {
-        ok: false,
-        code: "invalid_source",
-        detail: `Hosted source '${source.kind}' requires a non-empty repository locator string.`,
+        ok: true,
+        source: {
+          kind: source.kind,
+          status: "setup_required",
+          locator: repoLocator,
+        },
       };
     }
 
     return {
-      ok: true,
-      source: {
-        kind: source.kind,
-        status: "setup_required",
-        locator: repoLocator,
-      },
+      ok: false,
+      code: "invalid_source_kind",
+      detail: `Unknown or unsupported source kind '${(source as { kind?: string })?.kind}'.`,
     };
   }
 

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { SourceManager } from "../src/source/source-manager.js";
+import { SourceDescriptor } from "../src/domain/types.js";
 
 describe("SourceManager", () => {
   const tempDirs: string[] = [];
@@ -64,6 +65,27 @@ describe("SourceManager", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.code).toBe("invalid_source");
+    }
+  });
+  test("rejects null or non-object source descriptor", async () => {
+    const sourceManager = new SourceManager();
+
+    const result = await sourceManager.validateAndAcquire(null as any);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("invalid_source");
+    }
+  });
+
+  test("rejects unknown or unsupported source kind", async () => {
+    const sourceManager = new SourceManager();
+
+    const result = await sourceManager.validateAndAcquire({
+      kind: "unsupported_kind",
+    } as unknown as SourceDescriptor);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("invalid_source_kind");
     }
   });
 
