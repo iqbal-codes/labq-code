@@ -58,6 +58,13 @@ export class SourceManager {
     }
 
     if (source.kind === "local_folder") {
+      if (typeof source.path !== "string" || !source.path.trim()) {
+        return {
+          ok: false,
+          code: "invalid_source",
+          detail: "Local folder path must be a non-empty string.",
+        };
+      }
       const targetPath = path.resolve(source.path);
       try {
         const stat = fs.statSync(targetPath);
@@ -88,6 +95,13 @@ export class SourceManager {
     }
 
     if (source.kind === "git_url") {
+      if (typeof source.url !== "string" || !source.url.trim()) {
+        return {
+          ok: false,
+          code: "invalid_git_url",
+          detail: "Git repository URL must be a non-empty string.",
+        };
+      }
       const url = source.url.trim();
       if (!this.isValidGitUrl(url)) {
         return {

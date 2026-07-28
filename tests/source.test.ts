@@ -53,6 +53,19 @@ describe("SourceManager", () => {
       expect(result.code).toBe("invalid_source_path");
     }
   });
+  test("rejects local folder binding for non-string or empty path", async () => {
+    const sourceManager = new SourceManager();
+
+    const result = await sourceManager.validateAndAcquire({
+      kind: "local_folder",
+      path: "   " as any,
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("invalid_source");
+    }
+  });
 
   test("rejects local folder binding for a file path (not a directory)", async () => {
     const tempDir = makeTempDir();
