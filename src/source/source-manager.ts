@@ -38,12 +38,20 @@ export class SourceManager {
       path.join(os.tmpdir(), "labq-orchestrator-workspaces");
     this.gitCloner = options.gitCloner || defaultGitCloner;
   }
-
   async validateAndAcquire(
-    source: SourceDescriptor
+    source: SourceDescriptor,
+    options?: { signal?: AbortSignal }
   ): Promise<
     { ok: true; source: ProjectSource } | { ok: false; code: string; detail: string }
   > {
+    if (options?.signal?.aborted) {
+      return {
+        ok: false,
+        code: "acquisition_canceled",
+        detail: "Managed acquisition was canceled.",
+      };
+    }
+
     if (source.kind === "local_folder") {
       const targetPath = path.resolve(source.path);
       try {
@@ -88,15 +96,33 @@ export class SourceManager {
       const workspacePath = path.join(this.managedRoot, workspaceId);
 
       try {
+        if (options?.signal?.aborted) {
+          throw new Error("Managed acquisition was canceled.");
+        }
         fs.mkdirSync(workspacePath, { recursive: true });
-        await this.gitCloner(url, workspacePath);
+
+        const clonePromise = this.gitCloner(url, workspacePath);
+        if (options?.signal) {
+          const signal = options.signal;
+          await Promise.race([
+            clonePromise,
+            new Promise<never>((_, reject) => {
+              const onAbort = () => reject(new Error("Managed acquisition was canceled."));
+              if (signal.aborted) onAbort();
+              else signal.addEventListener("abort", onAbort, { once: true });
+            }),
+          ]);
+        } else {
+          await clonePromise;
+        }
       } catch (err: unknown) {
-        // Transactional cleanup on failure
+        // Transactional cleanup on failure or cancellation
         this.cleanupPath(workspacePath);
         const message = err instanceof Error ? err.message : String(err);
+        const code = message.includes("canceled") ? "acquisition_canceled" : "acquisition_failed";
         return {
           ok: false,
-          code: "acquisition_failed",
+          code,
           detail: `Failed to acquire Git repository (${url}): ${message}`,
         };
       }

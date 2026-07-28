@@ -96,6 +96,37 @@ describe("SourceManager", () => {
     const contents = fs.readdirSync(managedRoot);
     expect(contents.length).toBe(0);
   });
+  test("cleans up managed workspace artifacts when acquisition is canceled via AbortSignal", async () => {
+    const managedRoot = makeTempDir();
+    const controller = new AbortController();
+    const slowCloner = async (_url: string, targetPath: string) => {
+      fs.writeFileSync(path.join(targetPath, "temp-clone-file.txt"), "cloning...");
+      controller.abort();
+      await new Promise((r) => setTimeout(r, 100));
+    };
+
+    const sourceManager = new SourceManager({
+      managedWorkspaceRoot: managedRoot,
+      gitCloner: slowCloner,
+    });
+
+    const result = await sourceManager.validateAndAcquire(
+      {
+        kind: "git_url",
+        url: "https://github.com/example/cancel-repo.git",
+      },
+      { signal: controller.signal }
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("acquisition_canceled");
+    }
+
+    // Verify transactional cleanup after cancellation
+    const contents = fs.readdirSync(managedRoot);
+    expect(contents.length).toBe(0);
+  });
 
   test("acquires valid Git URL into managed workspace", async () => {
     const managedRoot = makeTempDir();
