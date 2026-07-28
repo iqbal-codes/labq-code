@@ -785,9 +785,18 @@ export class OrchestratorEngine {
     const diagnostics: ProtocolDiagnosticEntry[] = [];
     for (const event of this.events) {
       const data = (event.data || {}) as Record<string, unknown>;
-      const projId = typeof data.project_id === "string" ? data.project_id : undefined;
-      const threadId = typeof data.thread_id === "string" ? data.thread_id : undefined;
-      const turnId = typeof data.turn_id === "string" ? data.turn_id : undefined;
+      const scoping = this.getEventScoping(event);
+      const threadId = scoping.thread_id;
+      const projectFromThread = threadId
+        ? this.snapshot.threads[threadId]?.project_id
+        : undefined;
+      const projId = scoping.project_id ?? projectFromThread;
+      const turnId =
+        typeof data.turn_id === "string"
+          ? data.turn_id
+          : event.kind === "TurnQueued"
+            ? event.data.turn.id
+            : undefined;
 
       if (filter?.project_id && projId !== filter.project_id) continue;
       if (filter?.thread_id && threadId !== filter.thread_id) continue;
