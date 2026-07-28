@@ -663,6 +663,38 @@ describe("OrchestratorEngine", () => {
     const snapThreads = events[0].data.snapshot.threads;
     expect(Object.keys(snapThreads)).toEqual(["th-1"]);
   });
+  test("scopes initial snapshot emission conjunctively when both project_id and thread_id filter are supplied", async () => {
+    const dir = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p1-cmd",
+      project_id: "proj-A",
+      name: "Proj A",
+      source: { kind: "local_folder", path: dir },
+    });
+    await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "t1-cmd",
+      thread_id: "th-A1",
+      project_id: "proj-A",
+      model: "pi-default",
+      access_profile: "read-only",
+      interaction_mode: "execute",
+    });
+
+    // Mismatched project_id and thread_id should return empty projects/threads
+    const mismatchedEvents: any[] = [];
+    engine.subscribe((e) => mismatchedEvents.push(e), {
+      project_id: "proj-WRONG",
+      thread_id: "th-A1",
+    });
+
+    expect(mismatchedEvents.length).toBe(1);
+    expect(Object.keys(mismatchedEvents[0].data.snapshot.projects).length).toBe(0);
+    expect(Object.keys(mismatchedEvents[0].data.snapshot.threads).length).toBe(0);
+  });
   test("rejects project creation with empty name", async () => {
     const engine = new OrchestratorEngine();
     const res = await engine.dispatchCommand({

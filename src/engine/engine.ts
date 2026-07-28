@@ -291,7 +291,15 @@ export class OrchestratorEngine {
     const projects: Record<string, Project> = {};
     const threads: Record<string, Thread> = {};
 
-    if (filter.thread_id && full.threads[filter.thread_id]) {
+    if (filter.project_id && filter.thread_id) {
+      const th = full.threads[filter.thread_id];
+      if (th && th.project_id === filter.project_id) {
+        threads[th.id] = th;
+        if (full.projects[filter.project_id]) {
+          projects[filter.project_id] = full.projects[filter.project_id];
+        }
+      }
+    } else if (filter.thread_id && full.threads[filter.thread_id]) {
       const th = full.threads[filter.thread_id];
       threads[th.id] = th;
       if (full.projects[th.project_id]) {
