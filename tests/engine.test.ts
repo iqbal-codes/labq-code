@@ -1,0 +1,433 @@
+import { describe, test, expect, afterEach } from "bun:test";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+import { OrchestratorEngine } from "../src/engine/engine.js";
+import { SourceManager } from "../src/source/source-manager.js";
+
+describe("OrchestratorEngine", () => {
+  const tempDirs: string[] = [];
+
+  function makeTempDir(): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "labq-engine-test-"));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  afterEach(() => {
+    for (const dir of tempDirs) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch {}
+    }
+    tempDirs.length = 0;
+  });
+
+  test("creates project and thread with curated model, access profile, and execute mode", async () => {
+    const localDir = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    const projRes = await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "cmd-p1",
+      name: "My Project",
+      source: { kind: "local_folder", path: localDir },
+    });
+
+    expect(projRes.ok).toBe(true);
+    if (!projRes.ok) return;
+
+    const projectId = projRes.project_id!;
+    expect(projectId).toBeDefined();
+
+    const proj = engine.getProject(projectId);
+    expect(proj).toBeDefined();
+    expect(proj?.name).toBe("My Project");
+    expect(proj?.source.kind).toBe("local_folder");
+    expect(proj?.source.status).toBe("bound");
+
+    const threadRes = await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "cmd-t1",
+      project_id: projectId,
+      title: "Initial Task",
+      model: "pi-3.5-sonnet",
+      access_profile: "workspace-write",
+      interaction_mode: "execute",
+    });
+
+    expect(threadRes.ok).toBe(true);
+    if (!threadRes.ok) return;
+
+    const threadId = threadRes.thread_id!;
+    const thread = engine.getThread(threadId);
+    expect(thread).toBeDefined();
+    expect(thread?.model).toBe("pi-3.5-sonnet");
+    expect(thread?.access_profile).toBe("workspace-write");
+    expect(thread?.interaction_mode).toBe("execute");
+  });
+
+  test("rejects thread creation with unsupported interaction mode 'plan'", async () => {
+    const localDir = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    const projRes = await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "cmd-p1",
+      name: "My Project",
+      source: { kind: "local_folder", path: localDir },
+    });
+    expect(projRes.ok).toBe(true);
+    if (!projRes.ok) return;
+    const projectId = projRes.project_id!;
+
+    const threadRes = await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "cmd-t-plan",
+      project_id: projectId,
+      model: "pi-default",
+      access_profile: "read-only",
+      interaction_mode: "plan" as any,
+    });
+
+    expect(threadRes.ok).toBe(false);
+    if (!threadRes.ok) {
+      expect(threadRes.code).toBe("invalid_interaction_mode");
+    }
+  });
+
+  test("rejects invalid model or access profile", async () => {
+    const localDir = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    const projRes = await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "cmd-p1",
+      name: "My Project",
+      source: { kind: "local_folder", path: localDir },
+    });
+    expect(projRes.ok).toBe(true);
+    if (!projRes.ok) return;
+    const projectId = projRes.project_id!;
+
+    const invalidModelRes = await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "cmd-t-inv-mod",
+      project_id: projectId,
+      model: "invalid-model-xyz" as any,
+      access_profile: "read-only",
+      interaction_mode: "execute",
+    });
+    expect(invalidModelRes.ok).toBe(false);
+    if (!invalidModelRes.ok) expect(invalidModelRes.code).toBe("invalid_model");
+
+    const invalidAccessRes = await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "cmd-t-inv-acc",
+      project_id: projectId,
+      model: "pi-default",
+      access_profile: "root-admin-mode" as any,
+      interaction_mode: "execute",
+    });
+    expect(invalidAccessRes.ok).toBe(false);
+    if (!invalidAccessRes.ok) expect(invalidAccessRes.code).toBe("invalid_access_profile");
+  });
+
+  test("supports multiple projects and threads with independent aggregate identity", async () => {
+    const dir1 = makeTempDir();
+    const dir2 = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p1",
+      project_id: "proj-1",
+      name: "Project One",
+      source: { kind: "local_folder", path: dir1 },
+    });
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p2",
+      project_id: "proj-2",
+      name: "Project Two",
+      source: { kind: "local_folder", path: dir2 },
+    });
+
+    await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "t1",
+      thread_id: "th-1",
+      project_id: "proj-1",
+      title: "Thread 1",
+      model: "pi-default",
+      access_profile: "read-only",
+      interaction_mode: "execute",
+    });
+    await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "t2",
+      thread_id: "th-2",
+      project_id: "proj-2",
+      title: "Thread 2",
+      model: "pi-3-opus",
+      access_profile: "full-execution",
+      interaction_mode: "execute",
+    });
+
+    expect(engine.listProjects().length).toBe(2);
+    expect(engine.listThreads("proj-1").length).toBe(1);
+    expect(engine.listThreads("proj-2").length).toBe(1);
+    expect(engine.getThread("th-1")?.project_id).toBe("proj-1");
+    expect(engine.getThread("th-2")?.project_id).toBe("proj-2");
+  });
+
+  test("enforces lifecycle transitions and creates tombstones without deleting local files", async () => {
+    const dir = makeTempDir();
+    const dummyFile = path.join(dir, "source_code.txt");
+    fs.writeFileSync(dummyFile, "const x = 1;");
+
+    const engine = new OrchestratorEngine();
+
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p1",
+      project_id: "proj-lifecycle",
+      name: "Lifecycle Proj",
+      source: { kind: "local_folder", path: dir },
+    });
+    await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "t1",
+      thread_id: "th-lifecycle",
+      project_id: "proj-lifecycle",
+      model: "pi-default",
+      access_profile: "read-only",
+      interaction_mode: "execute",
+    });
+
+    // Valid transitions
+    const archiveRes = await engine.dispatchCommand({
+      kind: "archive_thread",
+      command_id: "arch-t1",
+      thread_id: "th-lifecycle",
+    });
+    expect(archiveRes.ok).toBe(true);
+    expect(engine.getThread("th-lifecycle")?.status).toBe("archived");
+
+    const settleRes = await engine.dispatchCommand({
+      kind: "settle_thread",
+      command_id: "set-t1",
+      thread_id: "th-lifecycle",
+    });
+    expect(settleRes.ok).toBe(true);
+    expect(engine.getThread("th-lifecycle")?.status).toBe("settled");
+
+    // Invalid transition: cannot archive settled thread
+    const invArchive = await engine.dispatchCommand({
+      kind: "archive_thread",
+      command_id: "inv-arch-t1",
+      thread_id: "th-lifecycle",
+    });
+    expect(invArchive.ok).toBe(false);
+    if (!invArchive.ok) expect(invArchive.code).toBe("invalid_lifecycle_transition");
+
+    // Delete thread (tombstone)
+    const delThreadRes = await engine.dispatchCommand({
+      kind: "delete_thread",
+      command_id: "del-t1",
+      thread_id: "th-lifecycle",
+    });
+    expect(delThreadRes.ok).toBe(true);
+    expect(engine.getThread("th-lifecycle")).toBeUndefined(); // Excluded from normal query
+    expect(engine.getThread("th-lifecycle", true)?.status).toBe("deleted"); // Present in tombstone view
+
+    // Delete project (tombstone)
+    const delProjRes = await engine.dispatchCommand({
+      kind: "delete_project",
+      command_id: "del-p1",
+      project_id: "proj-lifecycle",
+    });
+    expect(delProjRes.ok).toBe(true);
+    expect(engine.getProject("proj-lifecycle")).toBeUndefined();
+
+    // Verify local file is NOT deleted!
+    expect(fs.existsSync(dummyFile)).toBe(true);
+  });
+
+  test("idempotency: repeating a command ID returns original receipt without appending events", async () => {
+    const dir = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    const cmd = {
+      kind: "create_project" as const,
+      command_id: "idempotent-cmd-1",
+      project_id: "p-idem",
+      name: "Idempotent Proj",
+      source: { kind: "local_folder" as const, path: dir },
+    };
+
+    const res1 = await engine.dispatchCommand(cmd);
+    expect(res1.ok).toBe(true);
+    expect(res1.duplicate).toBeUndefined();
+
+    const initialEvents = engine.getEvents();
+    expect(initialEvents.length).toBe(1);
+
+    const res2 = await engine.dispatchCommand(cmd);
+    expect(res2.ok).toBe(true);
+    expect(res2.duplicate).toBe(true);
+
+    const res2Success = res2 as Extract<typeof res2, { ok: true }>;
+    const res1Success = res1 as Extract<typeof res1, { ok: true }>;
+    expect(res2Success.project_id).toBe(res1Success.project_id);
+
+    // Event count remains 1
+    expect(engine.getEvents().length).toBe(1);
+  });
+
+  test("rebuilding snapshot from history produces identical result to live projection", async () => {
+    const dir1 = makeTempDir();
+    const dir2 = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p1",
+      project_id: "p-1",
+      name: "P1",
+      source: { kind: "local_folder", path: dir1 },
+    });
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p2",
+      project_id: "p-2",
+      name: "P2",
+      source: { kind: "local_folder", path: dir2 },
+    });
+    await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "t1",
+      thread_id: "t-1",
+      project_id: "p-1",
+      model: "pi-mini",
+      access_profile: "read-only",
+      interaction_mode: "execute",
+    });
+    await engine.dispatchCommand({
+      kind: "archive_thread",
+      command_id: "t1-arch",
+      thread_id: "t-1",
+    });
+    await engine.dispatchCommand({
+      kind: "settle_project",
+      command_id: "p2-settle",
+      project_id: "p-2",
+    });
+
+    const liveSnapshot = engine.getSnapshot();
+    const rebuiltSnapshot = engine.rebuildSnapshotFromHistory();
+
+    expect(rebuiltSnapshot).toEqual(liveSnapshot);
+  });
+
+  test("sync replay and snapshot cursor boundaries", async () => {
+    const dir = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p1",
+      name: "P1",
+      source: { kind: "local_folder", path: dir },
+    });
+
+    const syncUpToDate = engine.sync(1);
+    expect(syncUpToDate.mode).toBe("up_to_date");
+
+    const syncReplay = engine.sync(0);
+    expect(syncReplay.mode).toBe("replay");
+    if (syncReplay.mode === "replay") {
+      expect(syncReplay.events.length).toBe(1);
+    }
+
+    const syncInvalidCursor = engine.sync(999);
+    expect(syncInvalidCursor.mode).toBe("snapshot");
+  });
+  test("hosted sources create setup_required project and reject thread creation until configured", async () => {
+    const engine = new OrchestratorEngine();
+
+    const projRes = await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "cmd-p-gh",
+      project_id: "proj-github",
+      name: "GitHub Repo Project",
+      source: { kind: "github", repo: "my-org/my-repo" },
+    });
+
+    expect(projRes.ok).toBe(true);
+    const proj = engine.getProject("proj-github");
+    expect(proj?.source.status).toBe("setup_required");
+
+    const threadRes = await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "cmd-t-gh",
+      project_id: "proj-github",
+      model: "pi-default",
+      access_profile: "read-only",
+      interaction_mode: "execute",
+    });
+
+    expect(threadRes.ok).toBe(false);
+    if (!threadRes.ok) {
+      expect(threadRes.code).toBe("source_setup_required");
+    }
+  });
+
+  test("returns deep immutable snapshot and query objects", async () => {
+    const dir = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p1",
+      project_id: "p-immut",
+      name: "Immutable Proj",
+      source: { kind: "local_folder", path: dir },
+    });
+
+    const snap = engine.getSnapshot();
+    snap.projects["p-immut"].name = "Hacked Name";
+
+    const freshProj = engine.getProject("p-immut");
+    expect(freshProj?.name).toBe("Immutable Proj");
+  });
+
+  test("cleans up acquired Git workspace when decision fails", async () => {
+    const managedRoot = makeTempDir();
+    const sourceManager = new SourceManager({ managedWorkspaceRoot: managedRoot });
+    const engine = new OrchestratorEngine(sourceManager);
+
+    // Create initial project p1
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p1",
+      project_id: "duplicate-id",
+      name: "First Proj",
+      source: { kind: "local_folder", path: makeTempDir() },
+    });
+
+    // Try to create project with duplicate ID using git_url
+    const res = await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p2-fail",
+      project_id: "duplicate-id",
+      name: "Second Proj",
+      source: { kind: "git_url", url: "https://github.com/example/repo.git" },
+    });
+
+    expect(res.ok).toBe(false);
+    // Verify directory was cleaned up
+    const contents = fs.readdirSync(managedRoot);
+    expect(contents.length).toBe(0);
+  });
+});
