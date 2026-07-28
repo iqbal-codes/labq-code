@@ -625,6 +625,44 @@ describe("OrchestratorEngine", () => {
     const snapProjects = events[0].data.snapshot.projects;
     expect(Object.keys(snapProjects)).toEqual(["proj-1"]);
   });
+  test("scopes initial snapshot emission by thread_id filter", async () => {
+    const dir = makeTempDir();
+    const engine = new OrchestratorEngine();
+
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p1-cmd",
+      project_id: "proj-1",
+      name: "Proj 1",
+      source: { kind: "local_folder", path: dir },
+    });
+    await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "t1-cmd",
+      thread_id: "th-1",
+      project_id: "proj-1",
+      model: "pi-default",
+      access_profile: "read-only",
+      interaction_mode: "execute",
+    });
+    await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "t2-cmd",
+      thread_id: "th-2",
+      project_id: "proj-1",
+      model: "pi-default",
+      access_profile: "read-only",
+      interaction_mode: "execute",
+    });
+
+    const events: any[] = [];
+    engine.subscribe((e) => events.push(e), { thread_id: "th-1" });
+
+    expect(events.length).toBe(1);
+    expect(events[0].kind).toBe("SnapshotEmitted");
+    const snapThreads = events[0].data.snapshot.threads;
+    expect(Object.keys(snapThreads)).toEqual(["th-1"]);
+  });
   test("rejects project creation with empty name", async () => {
     const engine = new OrchestratorEngine();
     const res = await engine.dispatchCommand({

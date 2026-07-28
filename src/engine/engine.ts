@@ -291,17 +291,16 @@ export class OrchestratorEngine {
     const projects: Record<string, Project> = {};
     const threads: Record<string, Thread> = {};
 
-    let targetProjectId = filter.project_id;
     if (filter.thread_id && full.threads[filter.thread_id]) {
       const th = full.threads[filter.thread_id];
       threads[th.id] = th;
-      targetProjectId = th.project_id;
-    }
-
-    if (targetProjectId && full.projects[targetProjectId]) {
-      projects[targetProjectId] = full.projects[targetProjectId];
+      if (full.projects[th.project_id]) {
+        projects[th.project_id] = full.projects[th.project_id];
+      }
+    } else if (filter.project_id && full.projects[filter.project_id]) {
+      projects[filter.project_id] = full.projects[filter.project_id];
       for (const th of Object.values(full.threads)) {
-        if (th.project_id === targetProjectId) {
+        if (th.project_id === filter.project_id) {
           threads[th.id] = th;
         }
       }
