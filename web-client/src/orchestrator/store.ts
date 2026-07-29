@@ -106,7 +106,7 @@ export function createOrchestratorClientStore(
             error: null,
             sync: "syncing",
           });
-          const snap = port.getScopedSnapshot(scope);
+          const snap = await port.getScopedSnapshot(scope);
           if (isTransportError(snap)) {
             clearSubscription();
             set({
@@ -143,9 +143,9 @@ export function createOrchestratorClientStore(
         async reconnect() {
           set({ connection: "reconnecting", sync: "syncing" });
           const cursor = get().recoveryCursor;
-          const syncRes = port.sync(cursor, scope);
+          const syncRes = await port.sync(cursor, scope);
           if (isTransportError(syncRes)) {
-            const snap = port.getScopedSnapshot(scope);
+            const snap = await port.getScopedSnapshot(scope);
             if (isTransportError(snap)) {
               set({
                 connection: "disconnected",

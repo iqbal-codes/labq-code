@@ -37,11 +37,19 @@ export type TransportSyncResult = SyncResult | TransportError;
  */
 export interface OrchestratorTransportPort {
   /** Fetch the authoritative snapshot scoped to the given environment/project/thread. */
-  getScopedSnapshot(scope: SubscriptionScope): TransportSnapshotResult;
+  getScopedSnapshot(
+    scope: SubscriptionScope,
+  ): TransportSnapshotResult | Promise<TransportSnapshotResult>;
   /** Cursor-based replay or snapshot fallback. */
-  sync(cursor: number, scope: SubscriptionScope): TransportSyncResult;
+  sync(
+    cursor: number,
+    scope: SubscriptionScope,
+  ): TransportSyncResult | Promise<TransportSyncResult>;
   /** Open a scoped subscription; returns an unsubscribe function. */
-  subscribe(scope: SubscriptionScope, onEvent: (event: DomainEvent) => void): () => void;
+  subscribe(
+    scope: SubscriptionScope,
+    onEvent: (event: DomainEvent) => void,
+  ): () => void;
   /** Dispatch a typed command and resolve to its authoritative result. */
   dispatchCommand(command: Command): Promise<CommandResult>;
 }
