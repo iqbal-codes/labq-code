@@ -143,12 +143,15 @@ describe("OrchestratorClientStore", () => {
 
     // The store should detect a gap and trigger recovery.
     // Recovery succeeds synchronously and the project appears.
-    await vi.waitFor(
-      () => {
-        expect(Object.keys(store.getState().snapshot.projects).length).toBe(1);
-      },
-      { timeout: 100 },
-    );
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = () => {
+        if (Object.keys(store.getState().snapshot.projects).length === 1) resolve();
+        else if (Date.now() - start > 1000) reject(new Error("Timeout waiting for gap recovery"));
+        else setTimeout(check, 10);
+      };
+      check();
+    });
     expect(store.getState().snapshot.projects.p1.name).toBe("gap-project");
   });
 

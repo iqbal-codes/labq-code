@@ -46,10 +46,7 @@ export interface OrchestratorTransportPort {
     scope: SubscriptionScope,
   ): TransportSyncResult | Promise<TransportSyncResult>;
   /** Open a scoped subscription; returns an unsubscribe function. */
-  subscribe(
-    scope: SubscriptionScope,
-    onEvent: (event: DomainEvent) => void,
-  ): () => void;
+  subscribe(scope: SubscriptionScope, onEvent: (event: DomainEvent) => void): () => void;
   /** Dispatch a typed command and resolve to its authoritative result. */
   dispatchCommand(command: Command): Promise<CommandResult>;
 }

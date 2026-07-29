@@ -4,12 +4,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "build:frontend": "cd web-client && vp build",
+    "build:desktop": "bun run build:frontend && electrobun build",
+    "dev:frontend": "cd web-client && vp dev",
+    "dev:desktop": "electrobun dev",
+    "test": "bun test tests/electrobun-desktop-integration.test.ts tests/approval-input.test.ts tests/change-summary-capabilities.test.ts tests/engine.test.ts tests/process-lifecycle.test.ts tests/source.test.ts tests/storage.test.ts tests/transport-recovery.test.ts tests/turn.test.ts && cd web-client && vp test",
+    "typecheck": "tsc --noEmit && cd web-client && pnpm exec tsc --noEmit"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",
     "@types/node": "^22.0.0",
+    "electrobun": "^1.18.1",
     "typescript": "^5.7.0"
   }
 }

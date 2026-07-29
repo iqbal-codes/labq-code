@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from "react";
+import { useState, useEffect } from "react";
 import { RouterProvider } from "react-router";
 import { OrchestratorClientProvider } from "@/orchestrator/StoreContext";
 import { FakeTransport } from "@/orchestrator/fake-transport";
@@ -35,7 +35,21 @@ export function App() {
   }, []);
 
   if (!transport) {
-    return <div style={{ background: "#0a0a0a", color: "#d8d8d8", height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "monospace" }}>Loading\u2026</div>;
+    return (
+      <div
+        style={{
+          background: "#0a0a0a",
+          color: "#d8d8d8",
+          height: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontFamily: "monospace",
+        }}
+      >
+        Loading\u2026
+      </div>
+    );
   }
 
   return <AppInner transport={transport} />;

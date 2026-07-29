@@ -3,76 +3,141 @@ import { OrchestratorTransport } from "../transport/transport";
 import { defineElectrobunRPC } from "electrobun/bun";
 import type { CommandResult, DomainEvent, Snapshot, SyncResult } from "../domain/types";
 
+export interface SubscriptionScope {
+  environment_id?: string;
+  project_id?: string;
+  thread_id?: string;
+}
+
 /** Schema shared between Bun backend and webview via Electrobun RPC. */
 export interface OrchestratorRPCSchema {
   bun: {
     requests: {
-      getScopedSnapshot: (params: { scope?: { environment_id?: string; project_id?: string; thread_id?: string } }) => Snapshot | { ok: false; code: string; detail: string };
-      sync: (params: { cursor: number; scope?: { environment_id?: string; project_id?: string; thread_id?: string } }) => SyncResult | { ok: false; code: string; detail: string };
-      dispatchCommand: (params: { command: import("../domain/types").Command }) => Promise<CommandResult>;
+      getScopedSnapshot: {
+        params: { scope?: { environment_id?: string; project_id?: string; thread_id?: string } };
+        response: Snapshot | { ok: false; code: string; detail: string };
+      };
+      sync: {
+        params: { cursor: number; scope?: { environment_id?: string; project_id?: string; thread_id?: string } };
+        response: SyncResult | { ok: false; code: string; detail: string };
+      };
+      dispatchCommand: {
+        params: { command: import("../domain/types").Command };
+        response: CommandResult;
+      };
     };
     messages: {
-      event: (payload: DomainEvent) => void;
+      subscribe: SubscriptionScope;
+      unsubscribe: void;
     };
   };
   webview: {
     requests: Record<string, never>;
-    messages: Record<string, never>;
+    messages: {
+      event: DomainEvent;
+    };
   };
 }
 
 const engine = new OrchestratorEngine();
 const transport = new OrchestratorTransport({ engine });
 
-// Active subscribers: set of functions to send events to.
-const subscribers = new Set<(event: DomainEvent) => void>();
+interface SubscriberInfo {
+  rpc: RPC;
+  scope?: { environment_id?: string; project_id?: string; thread_id?: string };
+}
+
+// Active subscriber RPC proxies with subscription scopes.
+const subscribers = new Map<RPC, SubscriberInfo>();
+
+function isEventInScope(
+  event: DomainEvent,
+  scope?: { environment_id?: string; project_id?: string; thread_id?: string }
+): boolean {
+  if (!scope) return true;
+  const data = (event as any).data;
+  if (scope.project_id && data?.project?.id && data.project.id !== scope.project_id) return false;
+  if (scope.project_id && data?.thread?.project_id && data.thread.project_id !== scope.project_id) return false;
+  if (scope.thread_id && data?.thread?.id && data.thread.id !== scope.thread_id) return false;
+  if (scope.thread_id && data?.thread_id && data.thread_id !== scope.thread_id) return false;
+  return true;
+}
 
 // Subscribe the engine to broadcast events to all RPC subscribers.
 engine.subscribe((event) => {
-  for (const send of subscribers) {
-    try {
-      send(event);
-    } catch {
-      // Subscriber went away; skip.
+  for (const [subscriberRpc, info] of subscribers) {
+    if (isEventInScope(event, info.scope)) {
+      try {
+        subscriberRpc.send.event(event);
+      } catch {
+        // Subscriber went away; skip.
+      }
     }
   }
 });
 
 export type RPC = typeof rpc;
 
-const rpc = defineElectrobunRPC<OrchestratorRPCSchema, "bun">("bun", {
+import { BrowserView, BrowserWindow, Updater } from "electrobun/bun";
+
+const DEV_SERVER_URL = "http://localhost:5173";
+export async function getMainViewUrl(): Promise<string> {
+  try {
+    const channel = await Updater.localInfo.channel().catch(() => "dev");
+    if (channel === "dev") {
+      try {
+        await fetch(DEV_SERVER_URL, { method: "HEAD" });
+        return DEV_SERVER_URL;
+      } catch {
+        // Dev server not reachable; fall back to packaged view assets.
+      }
+    }
+  } catch {
+    // If channel check fails, fall back to packaged view assets.
+  }
+  return "views://mainview/index.html";
+}
+
+const rpc = BrowserView.defineRPC<OrchestratorRPCSchema>({
+  maxRequestTime: 30_000,
   handlers: {
     requests: {
-      getScopedSnapshot: ({ scope }) => {
-        return transport.getScopedSnapshot(undefined, scope as any) as any;
+      getScopedSnapshot: (params) => {
+        const scope = params?.scope;
+        return transport.getScopedSnapshot(undefined, scope);
       },
-      sync: ({ cursor, scope }) => {
-        return transport.sync(undefined, cursor, scope as any) as any;
+      sync: (params) => {
+        const cursor = params?.cursor ?? 0;
+        const scope = params?.scope;
+        return transport.sync(undefined, cursor, scope);
       },
-      dispatchCommand: async ({ command }) => {
-        return transport.dispatchCommand({ command, token: undefined });
+      dispatchCommand: async (params) => {
+        if (!params?.command) return { ok: false, code: "invalid_command", detail: "Command missing" };
+        return transport.dispatchCommand({ command: params.command, token: undefined });
       },
     },
-  },
-  extraRequestHandlers: {
-    /** Subscribe the caller to live domain events. Returns an unsubscribe token. */
-    subscribe: ({ scope }: { scope?: { environment_id?: string; project_id?: string; thread_id?: string } }) => {
-      let unsubscribed = false;
-      const send = (event: DomainEvent) => {
-        if (unsubscribed) return;
-        // The RPC framework sends a message back to the webview.
-        rpc.send.event(event);
-      };
-      subscribers.add(send);
-      return () => {
-        unsubscribed = true;
-        subscribers.delete(send);
-      };
-    },
-    /** Unsubscribe a previous subscription by the returned token. */
-    unsubscribe: ({ unsubscribe }: { unsubscribe: () => void }) => {
-      unsubscribe();
-      return { ok: true };
+    messages: {
+      subscribe: (scope) => {
+        subscribers.set(rpc, { rpc, scope: scope || undefined });
+      },
+      unsubscribe: () => {
+        subscribers.delete(rpc);
+      },
     },
   },
 });
+
+export function createWindow(url: string) {
+  return new BrowserWindow({
+    title: "LabQ Code",
+    url,
+    frame: { width: 1280, height: 800, x: 100, y: 100 },
+    rpc,
+  });
+}
+
+// Only launch window automatically when running as main entrypoint
+if (import.meta.main) {
+  const url = await getMainViewUrl();
+  createWindow(url);
+}
