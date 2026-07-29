@@ -38,9 +38,12 @@ export interface ApplyOutcome {
 export function applyOrderedEvent(state: ProjectionState, event: DomainEvent): ApplyOutcome {
   if (event.kind === "SnapshotEmitted") {
     const snap = event.data.snapshot;
+    if (snap.sequence <= state.lastSequence) {
+      return { state, applied: false, gap: false };
+    }
     const next: ProjectionState = {
       snapshot: structuredClone(snap),
-      lastSequence: Math.max(state.lastSequence, snap.sequence),
+      lastSequence: snap.sequence,
     };
     return { state: next, applied: true, gap: false };
   }
@@ -60,26 +63,64 @@ export function applyOrderedEvent(state: ProjectionState, event: DomainEvent): A
   return { state: next, applied: true, gap: false };
 }
 
+export interface RecoverResult {
+  state: ProjectionState;
+  complete: boolean;
+}
+
 /**
  * Recover the projection from a sync result, starting strictly after the last
  * applied exclusive sequence. Replay applies only events beyond the cursor; a
  * snapshot result replaces local state with fresh authoritative state.
  */
-export function recoverProjection(state: ProjectionState, sync: SyncResult): ProjectionState {
+export function recoverProjection(state: ProjectionState, sync: SyncResult): RecoverResult {
+  if (sync.mode === "up_to_date") {
+    return { state, complete: true };
+  }
   if (sync.mode === "replay") {
-    let next = state;
-    for (const event of sync.events) {
-      if (event.sequence > next.lastSequence) {
-        next = applyOrderedEvent(next, event).state;
-      }
+    const events = sync.events;
+    if (events.length === 0 && state.lastSequence < sync.to) {
+      return { state, complete: false };
     }
-    return next;
+
+    let current = state;
+    let expectedSeq = state.lastSequence + 1;
+
+    for (const event of events) {
+      if (event.sequence <= state.lastSequence) {
+        continue;
+      }
+      if (event.sequence !== expectedSeq) {
+        return { state, complete: false };
+      }
+      const outcome = applyOrderedEvent(current, event);
+      if (!outcome.applied || outcome.gap) {
+        return { state, complete: false };
+      }
+      current = outcome.state;
+      expectedSeq++;
+    }
+
+    if (current.lastSequence !== sync.to) {
+      return { state, complete: false };
+    }
+
+    return { state: current, complete: true };
   }
   if (sync.mode === "snapshot") {
+    if (sync.snapshot.sequence < state.lastSequence) {
+      return { state, complete: false };
+    }
+    if (sync.snapshot.sequence === state.lastSequence) {
+      return { state, complete: true };
+    }
     return {
-      snapshot: structuredClone(sync.snapshot),
-      lastSequence: sync.sequence,
+      state: {
+        snapshot: structuredClone(sync.snapshot),
+        lastSequence: sync.sequence,
+      },
+      complete: true,
     };
   }
-  return state;
+  return { state, complete: false };
 }

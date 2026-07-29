@@ -50,6 +50,7 @@ export type OrchestratorClientStore = StoreApi<OrchestratorClientState>;
 export interface CreateStoreOptions {
   token?: string;
   scope?: SubscriptionScope;
+  maxRecoveryAttempts?: number;
 }
 
 export function createOrchestratorClientStore(
@@ -57,10 +58,12 @@ export function createOrchestratorClientStore(
   opts: CreateStoreOptions = {},
 ): OrchestratorClientStore {
   const scope: SubscriptionScope = opts.scope ?? {};
+  const maxRecoveryAttempts = Math.max(1, opts.maxRecoveryAttempts ?? 3);
 
   return createStore<OrchestratorClientState>()(
     subscribeWithSelector((set, get) => {
       let unsubscribe: (() => void) | null = null;
+      let recoveryPromise: Promise<void> | null = null;
 
       const clearSubscription = () => {
         if (unsubscribe) {
@@ -141,10 +144,42 @@ export function createOrchestratorClientStore(
         },
 
         async reconnect() {
-          set({ connection: "reconnecting", sync: "syncing" });
-          const cursor = get().recoveryCursor;
-          const syncRes = await port.sync(cursor, scope);
-          if (isTransportError(syncRes)) {
+          if (recoveryPromise) {
+            return recoveryPromise;
+          }
+
+          const performRecovery = async () => {
+            set({ connection: "reconnecting", sync: "syncing" });
+            clearSubscription();
+
+            let attempts = 0;
+            while (attempts < maxRecoveryAttempts) {
+              attempts++;
+              const cursor = get().recoveryCursor;
+              const syncRes = await port.sync(cursor, scope);
+
+              if (isTransportError(syncRes)) {
+                continue;
+              }
+
+              const recovered = recoverProjection(
+                { snapshot: get().snapshot, lastSequence: get().recoveryCursor },
+                syncRes
+              );
+
+              if (recovered.complete) {
+                set({
+                  snapshot: recovered.state.snapshot,
+                  recoveryCursor: recovered.state.lastSequence,
+                  connection: "connected",
+                  sync: "synced",
+                });
+                ensureSubscription();
+                return;
+              }
+            }
+
+            // Fresh snapshot fallback after maxRecoveryAttempts
             const snap = await port.getScopedSnapshot(scope);
             if (isTransportError(snap)) {
               set({
@@ -155,27 +190,31 @@ export function createOrchestratorClientStore(
               });
               return;
             }
-            set({
-              snapshot: structuredClone(snap),
-              recoveryCursor: snap.sequence,
-              connection: "connected",
-              sync: "synced",
-              bootstrapStatus: "ready",
-            });
-            ensureSubscription();
-            return;
-          }
-          const next = recoverProjection(
-            { snapshot: get().snapshot, lastSequence: get().recoveryCursor },
-            syncRes,
-          );
-          set({
-            snapshot: next.snapshot,
-            recoveryCursor: next.lastSequence,
-            connection: "connected",
-            sync: "synced",
+
+            const currentCursor = get().recoveryCursor;
+            if (snap.sequence >= currentCursor) {
+              set({
+                snapshot: snap.sequence > currentCursor ? structuredClone(snap) : get().snapshot,
+                recoveryCursor: Math.max(currentCursor, snap.sequence),
+                connection: "connected",
+                sync: "synced",
+                bootstrapStatus: "ready",
+              });
+              ensureSubscription();
+            } else {
+              set({
+                connection: "disconnected",
+                sync: "stale",
+                error: { code: "stale_snapshot", detail: "Returned snapshot sequence is older than current recovery cursor." },
+              });
+            }
+          };
+
+          recoveryPromise = performRecovery().finally(() => {
+            recoveryPromise = null;
           });
-          ensureSubscription();
+
+          return recoveryPromise;
         },
 
         applyEvent(event: DomainEvent) {

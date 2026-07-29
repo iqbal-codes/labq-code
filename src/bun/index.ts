@@ -42,39 +42,12 @@ export interface OrchestratorRPCSchema {
 const engine = new OrchestratorEngine();
 const transport = new OrchestratorTransport({ engine });
 
-interface SubscriberInfo {
-  rpc: RPC;
-  scope?: { environment_id?: string; project_id?: string; thread_id?: string };
+interface RPCSubscriptionHandle {
+  offEvent: () => void;
+  unsubscribe: () => void;
 }
 
-// Active subscriber RPC proxies with subscription scopes.
-const subscribers = new Map<RPC, SubscriberInfo>();
-
-function isEventInScope(
-  event: DomainEvent,
-  scope?: { environment_id?: string; project_id?: string; thread_id?: string }
-): boolean {
-  if (!scope) return true;
-  const data = (event as any).data;
-  if (scope.project_id && data?.project?.id && data.project.id !== scope.project_id) return false;
-  if (scope.project_id && data?.thread?.project_id && data.thread.project_id !== scope.project_id) return false;
-  if (scope.thread_id && data?.thread?.id && data.thread.id !== scope.thread_id) return false;
-  if (scope.thread_id && data?.thread_id && data.thread_id !== scope.thread_id) return false;
-  return true;
-}
-
-// Subscribe the engine to broadcast events to all RPC subscribers.
-engine.subscribe((event) => {
-  for (const [subscriberRpc, info] of subscribers) {
-    if (isEventInScope(event, info.scope)) {
-      try {
-        subscriberRpc.send.event(event);
-      } catch {
-        // Subscriber went away; skip.
-      }
-    }
-  }
-});
+const subscriberHandles = new Map<RPC, RPCSubscriptionHandle>();
 
 export type RPC = typeof rpc;
 
@@ -118,10 +91,36 @@ const rpc = BrowserView.defineRPC<OrchestratorRPCSchema>({
     },
     messages: {
       subscribe: (scope) => {
-        subscribers.set(rpc, { rpc, scope: scope || undefined });
+        const existing = subscriberHandles.get(rpc);
+        if (existing) {
+          existing.unsubscribe();
+          subscriberHandles.delete(rpc);
+        }
+
+        const subRes = transport.createSubscription(undefined, scope || {});
+        if (subRes.ok) {
+          const offEvent = subRes.subscription.onEvent((event) => {
+            try {
+              rpc.send.event(event);
+            } catch {
+              // Subscriber went away
+            }
+          });
+          subscriberHandles.set(rpc, {
+            offEvent,
+            unsubscribe: () => {
+              offEvent();
+              subRes.subscription.unsubscribe();
+            },
+          });
+        }
       },
       unsubscribe: () => {
-        subscribers.delete(rpc);
+        const handle = subscriberHandles.get(rpc);
+        if (handle) {
+          handle.unsubscribe();
+          subscriberHandles.delete(rpc);
+        }
       },
     },
   },
