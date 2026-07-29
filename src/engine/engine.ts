@@ -48,6 +48,17 @@ export class OrchestratorEngine {
   private activeTurns: Map<string, ActiveTurnStream> = new Map();
   private storageAdapter: StorageAdapter;
 
+  /**
+   * Derive the provider name for a thread.
+   * In v1, all Pi models map to the "pi" provider.
+   */
+  private resolveProviderName(threadId: string): string {
+    const thread = this.snapshot.threads[threadId];
+    if (!thread) return "pi";
+    // v1: always "pi" — future: map from thread.model prefix
+    return "pi";
+  }
+
   constructor(sourceManager?: SourceManager, providerService?: ProviderService, storageAdapter?: StorageAdapter) {
     this.sourceManager = sourceManager || new SourceManager();
     const ps = providerService || new ProviderService();
@@ -264,7 +275,7 @@ export class OrchestratorEngine {
         this.activeTurns.delete(active.turn_id);
       } else if (command.kind === "stop_turn") {
         this.providerService
-          .stopTurn("pi", {
+          .stopTurn(this.resolveProviderName(command.thread_id), {
             turn_id: command.turn_id || "",
             thread_id: command.thread_id,
           })
@@ -326,8 +337,8 @@ export class OrchestratorEngine {
 
     const workspacePath = resolveWorkspacePath(thread, this.snapshot.projects) || "";
 
-    // Determine provider name from model prefix (v1: always "pi")
-    const providerName = "pi";
+    // v1: always "pi" provider
+    const providerName = this.resolveProviderName(command.thread_id);
 
     const abortController = new AbortController();
     const activeStream: ActiveTurnStream = {
