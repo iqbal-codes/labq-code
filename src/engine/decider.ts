@@ -273,13 +273,6 @@ export function decideCommand(
 
   switch (command.kind) {
     case "create_project": {
-      if (!command.name || !command.name.trim()) {
-        return {
-          ok: false,
-          code: "invalid_command",
-          detail: "Project name cannot be empty.",
-        };
-      }
 
       if (!resolvedSource) {
         return {

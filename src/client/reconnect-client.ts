@@ -81,11 +81,7 @@ export class ReconnectingClient {
   }
 
   simulateInvoluntaryDisconnect(): void {
-    if (this.subscription) {
-      this.subscription.unsubscribe();
-      this.subscription = null;
-    }
-    this.connected = false;
+    this.disconnect();
   }
 
   async reconnect(): Promise<SyncResult> {

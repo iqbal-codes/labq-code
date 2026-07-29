@@ -146,20 +146,14 @@ export function deriveTurnReviewState(
   };
 }
 
-export function canPerformRollback(
-  _turn: Turn,
-  _catalog: CuratedPiCatalog = DEFAULT_PI_CATALOG
-): { allowed: false; reason: string } {
+export function canPerformRollback(): { allowed: false; reason: string } {
   return {
     allowed: false,
     reason: "Rollback operation is unsupported in Pi v1. Turn review state is read-only.",
   };
 }
 
-export function canPerformCheckpoint(
-  _turn: Turn,
-  _catalog: CuratedPiCatalog = DEFAULT_PI_CATALOG
-): { allowed: false; reason: string } {
+export function canPerformCheckpoint(): { allowed: false; reason: string } {
   return {
     allowed: false,
     reason: "Transactional checkpoints are unsupported in Pi v1.",

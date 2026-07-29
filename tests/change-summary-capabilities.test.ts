@@ -304,12 +304,12 @@ describe("06 — Canonical Plans, Diffs, and Checkpoints", () => {
     expect(reviewState.change_summary).toBeDefined();
 
     // Rollback rejection
-    const rbCheck = canPerformRollback(mockTurn);
+    const rbCheck = canPerformRollback();
     expect(rbCheck.allowed).toBe(false);
     expect(rbCheck.reason).toContain("unsupported");
 
     // Checkpoint rejection
-    const cpCheck = canPerformCheckpoint(mockTurn);
+    const cpCheck = canPerformCheckpoint();
     expect(cpCheck.allowed).toBe(false);
     expect(cpCheck.reason).toContain("unsupported");
 
