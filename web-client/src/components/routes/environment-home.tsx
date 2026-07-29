@@ -125,24 +125,6 @@ export function EnvironmentHome() {
       return;
     }
 
-    try {
-      if ("showDirectoryPicker" in window && typeof window.showDirectoryPicker === "function") {
-        const handle = await window.showDirectoryPicker();
-        const dirPath = (handle as { path?: string }).path || handle.name;
-        if (dirPath) {
-          setLocator(dirPath);
-          setFormError(null);
-          if (!projectName.trim()) {
-            setProjectName(handle.name);
-          }
-        }
-        return;
-      }
-    } catch (err: unknown) {
-      if (err instanceof Error && err.name === "AbortError") {
-        return;
-      }
-    }
     fileInputRef.current?.click();
   };
 
