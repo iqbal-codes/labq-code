@@ -11,6 +11,7 @@ import type {
 import {
   validateImageAttachments,
   InputField,
+  DEFAULT_ENVIRONMENT_ID,
 } from "../domain/types.js";
 import {
   validateModel,
@@ -27,11 +28,11 @@ export type EventDraft =
   | { kind: "ThreadArchived"; data: { thread_id: string } }
   | { kind: "ThreadSettled"; data: { thread_id: string } }
   | { kind: "ThreadDeleted"; data: { thread_id: string } }
+  | { kind: "SessionStarted"; data: { environment_id: string; project_id: string; thread_id: string; turn_id: string; provider_name: "pi"; provider_instance_id: "pi-default"; session_id: string } }
   | { kind: "TurnQueued"; data: { turn: Turn } }
   | { kind: "TurnInterrupted"; data: { turn_id: string } }
   | { kind: "PendingRequestResolved"; data: { turn_id: string; request_id: string; response: PendingRequestResponse } }
   | { kind: "SessionStopped"; data: { thread_id: string } };
-
 export type DeciderResult =
   | { ok: true; events: EventDraft[]; resultData: Record<string, unknown> }
   | { ok: false; code: string; detail: string };
@@ -46,7 +47,14 @@ function validatePendingRequest(
   turnId: string,
   threadId: string,
   requestId: string,
-  expectedKind: "approval" | "input"
+  expectedKind: "approval" | "input",
+  cmdIdentity?: {
+    environment_id?: string;
+    project_id?: string;
+    provider_name?: string;
+    provider_instance_id?: string;
+    session_id?: string;
+  }
 ): DeciderResult {
   const turn = snapshot.turns[turnId];
   if (!turn) {
@@ -58,11 +66,32 @@ function validatePendingRequest(
   if (turn.status !== "paused" || !turn.pending_request) {
     return { ok: false, code: "no_pending_request", detail: `Turn '${turnId}' has no pending ${expectedKind} request.` };
   }
-  if (turn.pending_request.id !== requestId) {
-    return { ok: false, code: "stale_request", detail: `Request '${requestId}' does not match the current pending request '${turn.pending_request.id}'.` };
+  const req = turn.pending_request;
+  if (req.id !== requestId) {
+    return { ok: false, code: "stale_request", detail: `Request '${requestId}' does not match the current pending request '${req.id}'.` };
   }
-  if (turn.pending_request.kind !== expectedKind) {
-    return { ok: false, code: "wrong_request_kind", detail: `Request '${requestId}' is a '${turn.pending_request.kind}' request, not an ${expectedKind} request.` };
+  if (req.kind !== expectedKind) {
+    return { ok: false, code: "wrong_request_kind", detail: `Request '${requestId}' is a '${req.kind}' request, not an ${expectedKind} request.` };
+  }
+  if (req.status !== "pending") {
+    return { ok: false, code: "stale_request", detail: `Request '${requestId}' is in status '${req.status}', not 'pending'.` };
+  }
+  if (cmdIdentity) {
+    if (cmdIdentity.environment_id && req.environment_id !== cmdIdentity.environment_id) {
+      return { ok: false, code: "request_identity_mismatch", detail: `Environment ID '${cmdIdentity.environment_id}' does not match pending request '${req.environment_id}'.` };
+    }
+    if (cmdIdentity.project_id && req.project_id !== cmdIdentity.project_id) {
+      return { ok: false, code: "request_identity_mismatch", detail: `Project ID '${cmdIdentity.project_id}' does not match pending request '${req.project_id}'.` };
+    }
+    if (cmdIdentity.provider_name && req.provider_name !== cmdIdentity.provider_name) {
+      return { ok: false, code: "request_identity_mismatch", detail: `Provider name '${cmdIdentity.provider_name}' does not match pending request '${req.provider_name}'.` };
+    }
+    if (cmdIdentity.provider_instance_id && req.provider_instance_id !== cmdIdentity.provider_instance_id) {
+      return { ok: false, code: "request_identity_mismatch", detail: `Provider instance ID '${cmdIdentity.provider_instance_id}' does not match pending request '${req.provider_instance_id}'.` };
+    }
+    if (cmdIdentity.session_id && req.session_id && req.session_id !== cmdIdentity.session_id) {
+      return { ok: false, code: "request_identity_mismatch", detail: `Session ID '${cmdIdentity.session_id}' does not match pending request '${req.session_id}'.` };
+    }
   }
   return { ok: true, events: [], resultData: {} };
 }
@@ -82,8 +111,8 @@ function validateFieldValue(
       }
       break;
     case "number":
-      if (typeof value !== "number") {
-        return { ok: false, code: "invalid_field_type", detail: `Field '${field.id}' (${field.label}) expects a number, got ${typeof value}.` };
+      if (typeof value !== "number" || !Number.isFinite(value)) {
+        return { ok: false, code: "invalid_field_type", detail: `Field '${field.id}' (${field.label}) expects a finite number, got ${typeof value}.` };
       }
       break;
     case "boolean":
@@ -113,23 +142,13 @@ function validateCommandShape(command: Command): DeciderResult | null {
     };
   }
 
-  const value = command as unknown as {
-    command_id?: unknown;
-    kind?: unknown;
-    name?: unknown;
-    source?: unknown;
-    project_id?: unknown;
-    model?: unknown;
-    access_profile?: unknown;
-    interaction_mode?: unknown;
-    thread_id?: unknown;
-    turn_id?: unknown;
-    request_id?: unknown;
-    decision?: unknown;
-    content?: unknown;
-    values?: unknown;
-  };
-  const requireString = (field: keyof typeof value): DeciderResult | null =>
+  const value = command as unknown as Record<string, unknown>;
+  if (typeof value.environment_id !== "string" || !value.environment_id.trim()) {
+    value.environment_id = "default-env";
+    (command as unknown as { environment_id: string }).environment_id = "default-env";
+  }
+
+  const requireString = (field: string): DeciderResult | null =>
     typeof value[field] === "string" && (value[field] as string).trim()
       ? null
       : {
@@ -140,9 +159,10 @@ function validateCommandShape(command: Command): DeciderResult | null {
 
   const commandIdError = requireString("command_id");
   if (commandIdError) return commandIdError;
+  const envIdError = requireString("environment_id");
+  if (envIdError) return envIdError;
   const kindError = requireString("kind");
   if (kindError) return kindError;
-
   switch (command.kind) {
     case "create_project": {
       const nameError = requireString("name");
@@ -295,6 +315,7 @@ export function decideCommand(
 
       const project: Project = {
         id: projectId,
+        environment_id: command.environment_id || DEFAULT_ENVIRONMENT_ID,
         name: command.name,
         source: resolvedSource,
         status: "active",
@@ -447,7 +468,10 @@ export function decideCommand(
 
       const thread: Thread = {
         id: threadId,
+        environment_id: command.environment_id || DEFAULT_ENVIRONMENT_ID,
         project_id: command.project_id,
+        provider_name: "pi",
+        provider_instance_id: "pi-default",
         title: command.title || "New Thread",
         status: "active",
         session_status: "ready",
@@ -605,7 +629,12 @@ export function decideCommand(
 
       const turn: Turn = {
         id: turnId,
+        environment_id: command.environment_id || DEFAULT_ENVIRONMENT_ID,
+        project_id: thread.project_id,
         thread_id: command.thread_id,
+        provider_name: "pi",
+        provider_instance_id: "pi-default",
+        session_id: thread.session_id,
         status: "queued",
         user_message: command.content,
         activities: {},
@@ -740,7 +769,7 @@ export function decideCommand(
 
     case "respond_approval": {
       const baseCheck = validatePendingRequest(
-        snapshot, command.turn_id, command.thread_id, command.request_id, "approval"
+        snapshot, command.turn_id, command.thread_id, command.request_id, "approval", command
       );
       if (!baseCheck.ok) return baseCheck;
       const approvalTurn = snapshot.turns[command.turn_id];
@@ -765,7 +794,7 @@ export function decideCommand(
 
     case "respond_input": {
       const baseCheck = validatePendingRequest(
-        snapshot, command.turn_id, command.thread_id, command.request_id, "input"
+        snapshot, command.turn_id, command.thread_id, command.request_id, "input", command
       );
       if (!baseCheck.ok) return baseCheck;
       const inputTurn = snapshot.turns[command.turn_id];
@@ -776,9 +805,22 @@ export function decideCommand(
       if (projectError) return projectError;
 
       const turn = snapshot.turns[command.turn_id]!;
+      const pendingFields = turn.pending_request?.fields || [];
+      if (pendingFields.length > 0) {
+        const validFieldIds = new Set(pendingFields.map((f) => f.id));
+        for (const key of Object.keys(command.values)) {
+          if (!validFieldIds.has(key)) {
+            return {
+              ok: false,
+              code: "unknown_field_id",
+              detail: `Field '${key}' is not part of pending request '${command.request_id}'.`,
+            };
+          }
+        }
+      }
 
       // Validate required fields
-      for (const field of turn.pending_request!.fields) {
+      for (const field of pendingFields) {
         if (field.required && !(field.id in command.values)) {
           return {
             ok: false,
@@ -789,7 +831,7 @@ export function decideCommand(
       }
 
       // Validate field value types and select options
-      for (const field of turn.pending_request!.fields) {
+      for (const field of pendingFields) {
         if (!(field.id in command.values)) continue; // optional absent field is fine
         const value = command.values[field.id];
         const typeError = validateFieldValue(field, value);

@@ -303,8 +303,10 @@ describe("Turn Orchestration", () => {
     await createScope(engine, dir, "proj-img", "th-img");
 
     // Too many images (6 > max 5)
-    const tooMany = Array.from({ length: 6 }, () => ({
+    const tooMany = Array.from({ length: 6 }, (_, i) => ({
+      filename: `img${i}.png`,
       media_type: "image/png",
+      size_bytes: 100,
       data: Buffer.alloc(100).toString("base64"),
     }));
     const res1 = await engine.dispatchCommand({
@@ -317,8 +319,10 @@ describe("Turn Orchestration", () => {
     if (!res1.ok) expect(res1.code).toBe("image_bounds_exceeded");
 
     // Under limit works
-    const okImages = Array.from({ length: 5 }, () => ({
+    const okImages = Array.from({ length: 5 }, (_, i) => ({
+      filename: `img${i}.png`,
       media_type: "image/png",
+      size_bytes: 100,
       data: Buffer.alloc(100).toString("base64"),
     }));
     const res2 = await engine.dispatchCommand({
@@ -329,11 +333,12 @@ describe("Turn Orchestration", () => {
     });
     expect(res2.ok).toBe(true);
 
-    // Huge image (~25MB base64 → ~18.75MB actual... wait, let me recalculate)
-    // 25 million null bytes base64-encoded ≈ 33M base64 chars → ~25MB actual > 20MB limit
+    const hugeBuf = Buffer.alloc(30 * 1024 * 1024);
     const huge = {
+      filename: "huge.png",
       media_type: "image/png",
-      data: Buffer.alloc(30 * 1024 * 1024).toString("base64"),
+      size_bytes: hugeBuf.length,
+      data: hugeBuf.toString("base64"),
     };
     const res3 = await engine.dispatchCommand({
       kind: "start_turn",
@@ -621,15 +626,16 @@ describe("PiAdapter normalization", () => {
     expect(validateImageBounds([])).toBeNull();
     expect(validateImageBounds(undefined as any)).toBeNull();
 
+    const validB64 = Buffer.alloc(3).toString("base64");
     const five = Array.from({ length: 5 }, () => ({
       media_type: "image/png",
-      data: "abc123",
+      data: validB64,
     }));
     expect(validateImageBounds(five)).toBeNull();
 
     const six = Array.from({ length: 6 }, () => ({
       media_type: "image/png",
-      data: "abc123",
+      data: validB64,
     }));
     expect(validateImageBounds(six)).toContain("exceeds maximum of 5");
   });

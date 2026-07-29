@@ -19,5 +19,8 @@
     "@types/three": "^0.185.1",
     "electrobun": "^1.18.1",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "^0.82.1"
   }
 }

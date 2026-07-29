@@ -279,7 +279,11 @@ describe("06 — Canonical Plans, Diffs, and Checkpoints", () => {
 
     const mockTurn = {
       id: "turn-review-1",
+      environment_id: "default-env",
+      project_id: "proj-1",
       thread_id: "thread-1",
+      provider_name: "pi" as const,
+      provider_instance_id: "pi-default" as const,
       status: "completed" as const,
       user_message: { text: "Make changes" },
       activities: {},

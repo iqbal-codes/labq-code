@@ -1,3 +1,5 @@
+export const DEFAULT_ENVIRONMENT_ID = "default-env";
+
 export type SourceKind =
   | "local_folder"
   | "git_url"
@@ -27,6 +29,7 @@ export type LifecycleStatus = "active" | "archived" | "settled" | "deleted";
 
 export interface Project {
   id: string;
+  environment_id: string;
   name: string;
   source: ProjectSource;
   status: LifecycleStatus;
@@ -51,7 +54,11 @@ export type SessionStatus = "none" | "ready" | "running" | "stopped";
 
 export interface Thread {
   id: string;
+  environment_id: string;
   project_id: string;
+  provider_name: "pi";
+  provider_instance_id: "pi-default";
+  session_id?: string;
   title: string;
   status: LifecycleStatus;
   session_status: SessionStatus;
@@ -160,7 +167,9 @@ export type TurnStatus = "queued" | "running" | "paused" | "completed" | "failed
 export type ToolActivityStatus = "in_progress" | "success" | "failure" | "decline" | "interrupted";
 
 export interface ImageAttachment {
+  filename: string;
   media_type: string;
+  size_bytes: number;
   data: string; // base64-encoded, bounded in size
 }
 
@@ -194,7 +203,12 @@ export type AssistantMessagePart =
 
 export interface Turn {
   id: string;
+  environment_id: string;
+  project_id: string;
   thread_id: string;
+  provider_name: "pi";
+  provider_instance_id: "pi-default";
+  session_id?: string;
   status: TurnStatus;
   user_message: UserMessageContent;
   assistant_message?: AssistantMessage;
@@ -229,10 +243,17 @@ export type PendingRequestStatus = "pending" | "approved" | "declined" | "answer
 
 export interface PendingRequest {
   id: string;
-  turn_id: string;
+  environment_id: string;
+  project_id: string;
   thread_id: string;
-  kind: PendingRequestKind;
+  turn_id: string;
+  provider_name: "pi";
+  provider_instance_id: "pi-default";
+  session_id: string;
   operation: string;
+  target_scope: string;
+  impact: string;
+  kind: PendingRequestKind;
   description?: string;
   fields: InputField[];
   status: PendingRequestStatus;
@@ -259,6 +280,17 @@ export const MAX_IMAGE_SIZE_BYTES = 20 * 1024 * 1024; // 20 MiB total per turn
  * Validate image attachments against bounds.
  * Returns a validation error message, or null if valid.
  */
+export function decodedBase64ByteLength(data: string): number {
+  const clean = data.trim();
+  if (clean.length === 0) return 0;
+  if (clean.length % 4 !== 0) return -1;
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(clean)) return -1;
+  let padding = 0;
+  if (clean.endsWith("==")) padding = 2;
+  else if (clean.endsWith("=")) padding = 1;
+  return (clean.length * 3) / 4 - padding;
+}
+
 export function validateImageAttachments(
   images?: ImageAttachment[]
 ): string | null {
@@ -266,11 +298,28 @@ export function validateImageAttachments(
   if (images.length > MAX_IMAGE_COUNT) {
     return `Image count ${images.length} exceeds maximum of ${MAX_IMAGE_COUNT}.`;
   }
-  const totalBytes = images.reduce((sum, img) => sum + img.data.length, 0);
-  // data is base64-encoded; actual byte size is ~3/4 of base64 length
-  const approxBytes = Math.ceil(totalBytes * 0.75);
-  if (approxBytes > MAX_IMAGE_SIZE_BYTES) {
-    return `Total image size exceeds ${MAX_IMAGE_SIZE_BYTES / (1024 * 1024)} MiB limit (approx ${Math.round(approxBytes / (1024 * 1024))} MiB).`;
+  let totalBytes = 0;
+  for (const img of images) {
+    if (!img.filename || typeof img.filename !== "string") {
+      return "Image filename is required.";
+    }
+    if (!img.media_type || !img.media_type.startsWith("image/")) {
+      return `Invalid image media type: ${img.media_type}. Must be an image/* type.`;
+    }
+    if (typeof img.size_bytes !== "number" || !Number.isFinite(img.size_bytes) || img.size_bytes <= 0) {
+      return `Invalid image size_bytes: ${img.size_bytes}. Must be a positive finite number.`;
+    }
+    const decodedLen = decodedBase64ByteLength(img.data || "");
+    if (decodedLen < 0) {
+      return `Invalid base64 encoding in image ${img.filename}.`;
+    }
+    if (decodedLen !== img.size_bytes) {
+      return `Image size_bytes mismatch for ${img.filename}: claimed ${img.size_bytes}, decoded ${decodedLen}.`;
+    }
+    totalBytes += img.size_bytes;
+  }
+  if (totalBytes > MAX_IMAGE_SIZE_BYTES) {
+    return `Total image size exceeds ${MAX_IMAGE_SIZE_BYTES / (1024 * 1024)} MiB limit (claimed ${Math.round(totalBytes / (1024 * 1024))} MiB).`;
   }
   return null;
 }
@@ -283,28 +332,32 @@ export interface CommandMeta {
 }
 
 export type Command =
-  | ({ kind: "create_project"; name: string; source: SourceDescriptor; project_id?: string } & CommandMeta)
-  | ({ kind: "archive_project"; project_id: string } & CommandMeta)
-  | ({ kind: "settle_project"; project_id: string } & CommandMeta)
-  | ({ kind: "delete_project"; project_id: string } & CommandMeta)
-  | ({ kind: "create_thread"; project_id: string; title?: string; model: PiModelId; access_profile: RuntimeAccessProfile; interaction_mode: InteractionMode; thread_id?: string } & CommandMeta)
-  | ({ kind: "archive_thread"; thread_id: string } & CommandMeta)
-  | ({ kind: "settle_thread"; thread_id: string } & CommandMeta)
-  | ({ kind: "delete_thread"; thread_id: string } & CommandMeta)
-  | ({ kind: "start_turn"; thread_id: string; content: UserMessageContent; turn_id?: string } & CommandMeta)
-  | ({ kind: "interrupt_turn"; turn_id: string; thread_id: string } & CommandMeta)
-  | ({ kind: "stop_turn"; thread_id: string; turn_id?: string } & CommandMeta)
-  | ({ kind: "respond_approval"; turn_id: string; thread_id: string; request_id: string; decision: "approved" | "declined" } & CommandMeta)
-  | ({ kind: "respond_input"; turn_id: string; thread_id: string; request_id: string; values: Record<string, string | number | boolean> } & CommandMeta);
+  | ({ kind: "create_project"; environment_id?: string; name: string; source: SourceDescriptor; project_id?: string } & CommandMeta)
+  | ({ kind: "archive_project"; environment_id?: string; project_id: string } & CommandMeta)
+  | ({ kind: "settle_project"; environment_id?: string; project_id: string } & CommandMeta)
+  | ({ kind: "delete_project"; environment_id?: string; project_id: string } & CommandMeta)
+  | ({ kind: "create_thread"; environment_id?: string; project_id: string; title?: string; model: PiModelId; access_profile: RuntimeAccessProfile; interaction_mode: InteractionMode; thread_id?: string } & CommandMeta)
+  | ({ kind: "archive_thread"; environment_id?: string; thread_id: string } & CommandMeta)
+  | ({ kind: "settle_thread"; environment_id?: string; thread_id: string } & CommandMeta)
+  | ({ kind: "delete_thread"; environment_id?: string; thread_id: string } & CommandMeta)
+  | ({ kind: "start_turn"; environment_id?: string; thread_id: string; content: UserMessageContent; turn_id?: string } & CommandMeta)
+  | ({ kind: "interrupt_turn"; environment_id?: string; thread_id: string; turn_id: string } & CommandMeta)
+  | ({ kind: "stop_turn"; environment_id?: string; thread_id: string; turn_id?: string } & CommandMeta)
+  | ({ kind: "respond_approval"; environment_id?: string; project_id?: string; thread_id: string; turn_id: string; provider_name?: "pi"; provider_instance_id?: "pi-default"; session_id?: string; request_id: string; decision: "approved" | "declined" } & CommandMeta)
+  | ({ kind: "respond_input"; environment_id?: string; project_id?: string; thread_id: string; turn_id: string; provider_name?: "pi"; provider_instance_id?: "pi-default"; session_id?: string; request_id: string; values: Record<string, string | number | boolean> } & CommandMeta);
 
-// Events
 export interface DomainEventMeta {
-  sequence: number;
   event_id: string;
+  sequence: number;
   timestamp: string;
-  command_id: string;
+  command_id?: string;
   correlation_id?: string;
   causation_id?: string;
+  provider_name?: string;
+  provider_instance_id?: string;
+  session_id?: string;
+  request_id?: string;
+  provider_event_id?: string;
 }
 
 export type DomainEvent =
@@ -317,6 +370,7 @@ export type DomainEvent =
   | ({ kind: "ThreadArchived"; data: { thread_id: string } } & DomainEventMeta)
   | ({ kind: "ThreadSettled"; data: { thread_id: string } } & DomainEventMeta)
   | ({ kind: "ThreadDeleted"; data: { thread_id: string } } & DomainEventMeta)
+  | ({ kind: "SessionStarted"; data: { environment_id: string; project_id: string; thread_id: string; turn_id: string; provider_name: "pi"; provider_instance_id: "pi-default"; session_id: string } } & DomainEventMeta)
   | ({ kind: "TurnQueued"; data: { turn: Turn } } & DomainEventMeta)
   | ({ kind: "TurnStarted"; data: { turn_id: string } } & DomainEventMeta)
   | ({ kind: "AssistantMessageDelta"; data: { turn_id: string; text: string } } & DomainEventMeta)

@@ -276,7 +276,10 @@ describe("Authoritative Transport and Reconnect Recovery", () => {
       data: {
         thread: {
           id: "th-gap",
+          environment_id: "default-env",
           project_id: "proj-1",
+          provider_name: "pi",
+          provider_instance_id: "pi-default",
           title: "Gap Thread",
           status: "active",
           session_status: "none",
@@ -407,6 +410,7 @@ describe("Authoritative Transport and Reconnect Recovery", () => {
       data: {
         project: {
           id: "proj-1",
+          environment_id: "default-env",
           name: "Stale Project Name",
           source: { kind: "local_folder", status: "bound", locator: localDir },
           status: "active",

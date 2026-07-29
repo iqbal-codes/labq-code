@@ -88,13 +88,15 @@ export class OrchestratorTransport {
     }
 
     // Extract scoping from command for authorization check
-    let scope: { project_id?: string; thread_id?: string } | undefined;
-    if ("project_id" in command && typeof command.project_id === "string") {
-      scope = { project_id: command.project_id };
-    } else if ("thread_id" in command && typeof command.thread_id === "string") {
-      scope = { thread_id: command.thread_id };
+    let scope: { environment_id?: string; project_id?: string; thread_id?: string } | undefined;
+    if ("environment_id" in command && typeof command.environment_id === "string") {
+      scope = { environment_id: command.environment_id };
     }
-
+    if ("project_id" in command && typeof command.project_id === "string") {
+      scope = { ...scope, project_id: command.project_id };
+    } else if ("thread_id" in command && typeof command.thread_id === "string") {
+      scope = { ...scope, thread_id: command.thread_id };
+    }
     if (this.authorize && !this.authorize(token, "mutate", scope)) {
       return {
         ok: false,
