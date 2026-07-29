@@ -52,9 +52,10 @@ export function useClientActions() {
   const reconnect = useOrchestratorStore((s) => s.reconnect);
   const dispatch = useOrchestratorStore((s) => s.dispatch);
   const retry = useOrchestratorStore((s) => s.retry);
+  const pickDirectory = useOrchestratorStore((s) => s.pickDirectory);
 
   return useMemo(
-    () => ({ connect, disconnect, simulateDisconnect, reconnect, dispatch, retry }),
-    [connect, disconnect, simulateDisconnect, reconnect, dispatch, retry],
+    () => ({ connect, disconnect, simulateDisconnect, reconnect, dispatch, retry, pickDirectory }),
+    [connect, disconnect, simulateDisconnect, reconnect, dispatch, retry, pickDirectory],
   );
 }

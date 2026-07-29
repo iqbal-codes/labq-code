@@ -141,6 +141,9 @@ export class FakeTransport implements OrchestratorTransportPort {
     return result;
   }
 
+  async pickDirectory(): Promise<{ ok: boolean; path?: string; error?: string }> {
+    return { ok: true, path: "/tmp/fake-selected-folder" };
+  }
   // --- internals ---------------------------------------------------------
 
   private matchesScope(scope: SubscriptionScope, event: DomainEvent): boolean {

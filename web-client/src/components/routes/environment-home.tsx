@@ -82,7 +82,7 @@ export const CANONICAL_SOURCES: SourceOption[] = [
 
 export function EnvironmentHome() {
   const navigate = useNavigate();
-  const { dispatch } = useClientActions();
+  const { dispatch, pickDirectory } = useClientActions();
   const bootstrapStatus = useOrchestratorStore((s) => s.bootstrapStatus);
   const error = useOrchestratorStore((s) => s.error);
   const snapshot = useOrchestratorStore((s) => s.snapshot);
@@ -103,6 +103,28 @@ export function EnvironmentHome() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handlePickDirectory = async () => {
+    setFormError(null);
+    const res = await pickDirectory();
+    if (res.ok && res.path) {
+      setLocator(res.path);
+      const sep = res.path.includes("\\") ? "\\" : "/";
+      const parts = res.path.split(sep).filter(Boolean);
+      const folderName = parts[parts.length - 1] || "Selected Folder";
+      if (!projectName.trim() && folderName) {
+        setProjectName(folderName);
+      }
+      return;
+    }
+    if (
+      res.error &&
+      res.error !== "Native directory picker not available" &&
+      !res.error.includes("Canceled") &&
+      !res.error.includes("No directory selected")
+    ) {
+      setFormError(res.error);
+      return;
+    }
+
     try {
       if ("showDirectoryPicker" in window && typeof window.showDirectoryPicker === "function") {
         const handle = await window.showDirectoryPicker();

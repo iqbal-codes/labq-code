@@ -49,4 +49,6 @@ export interface OrchestratorTransportPort {
   subscribe(scope: SubscriptionScope, onEvent: (event: DomainEvent) => void): () => void;
   /** Dispatch a typed command and resolve to its authoritative result. */
   dispatchCommand(command: Command): Promise<CommandResult>;
+  /** Optional native directory picker request. */
+  pickDirectory?(): Promise<{ ok: boolean; path?: string; error?: string }>;
 }

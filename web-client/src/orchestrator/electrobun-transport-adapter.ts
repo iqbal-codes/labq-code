@@ -72,5 +72,9 @@ export async function createElectrobunTransport(): Promise<OrchestratorTransport
     async dispatchCommand(command: Command): Promise<CommandResult> {
       return electroRpc.request.dispatchCommand({ command }) as Promise<CommandResult>;
     },
+
+    async pickDirectory(): Promise<{ ok: boolean; path?: string; error?: string }> {
+      return electroRpc.request.pickDirectory({}) as Promise<{ ok: boolean; path?: string; error?: string }>;
+    },
   };
 }

@@ -2,6 +2,47 @@ import { OrchestratorEngine } from "../engine/engine";
 import { OrchestratorTransport } from "../transport/transport";
 import { defineElectrobunRPC } from "electrobun/bun";
 import type { CommandResult, DomainEvent, Snapshot, SyncResult } from "../domain/types";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
+
+export async function pickDirectoryNative(): Promise<{ ok: boolean; path?: string; error?: string }> {
+  const platform = process.platform;
+  try {
+    if (platform === "darwin") {
+      const { stdout } = await execAsync(
+        `osascript -e 'POSIX path of (choose folder with prompt "Select Local Project Directory")'`,
+      );
+      const chosenPath = stdout.trim();
+      if (chosenPath) {
+        return { ok: true, path: chosenPath };
+      }
+      return { ok: false, error: "No directory selected" };
+    } else if (platform === "win32") {
+      const psCommand = `powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; $d.Description = 'Select Local Project Directory'; if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }"`;
+      const { stdout } = await execAsync(psCommand);
+      const chosenPath = stdout.trim();
+      if (chosenPath) {
+        return { ok: true, path: chosenPath };
+      }
+      return { ok: false, error: "No directory selected" };
+    } else {
+      try {
+        const { stdout } = await execAsync(`zenity --file-selection --directory --title="Select Local Project Directory"`);
+        const chosenPath = stdout.trim();
+        if (chosenPath) return { ok: true, path: chosenPath };
+      } catch {
+        const { stdout } = await execAsync(`kdialog --getexistingdirectory --title "Select Local Project Directory"`);
+        const chosenPath = stdout.trim();
+        if (chosenPath) return { ok: true, path: chosenPath };
+      }
+      return { ok: false, error: "No directory selected" };
+    }
+  } catch (err: unknown) {
+    return { ok: false, error: err instanceof Error ? err.message : "Canceled or failed to pick directory" };
+  }
+}
 
 export interface SubscriptionScope {
   environment_id?: string;
@@ -24,6 +65,10 @@ export interface OrchestratorRPCSchema {
       dispatchCommand: {
         params: { command: import("../domain/types").Command };
         response: CommandResult;
+      };
+      pickDirectory: {
+        params: Record<string, never>;
+        response: { ok: boolean; path?: string; error?: string };
       };
     };
     messages: {
@@ -87,6 +132,9 @@ const rpc = BrowserView.defineRPC<OrchestratorRPCSchema>({
       dispatchCommand: async (params) => {
         if (!params?.command) return { ok: false, code: "invalid_command", detail: "Command missing" };
         return transport.dispatchCommand({ command: params.command, token: undefined });
+      },
+      pickDirectory: async () => {
+        return pickDirectoryNative();
       },
     },
     messages: {

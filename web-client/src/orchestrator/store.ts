@@ -43,6 +43,8 @@ export interface OrchestratorClientState {
   dispatch: (command: Command) => Promise<CommandResult>;
   /** Retry bootstrap after a recoverable error. */
   retry: () => Promise<void>;
+  /** Optional native directory picker. */
+  pickDirectory: () => Promise<{ ok: boolean; path?: string; error?: string }>;
 }
 
 export type OrchestratorClientStore = StoreApi<OrchestratorClientState>;
@@ -255,6 +257,13 @@ export function createOrchestratorClientStore(
 
         async retry() {
           await get().connect();
+        },
+
+        async pickDirectory() {
+          if (typeof port.pickDirectory === "function") {
+            return port.pickDirectory();
+          }
+          return { ok: false, error: "Native directory picker not available" };
         },
       };
     }),
