@@ -39,9 +39,8 @@ export function EnvironmentHome() {
   const { dispatch } = useClientActions();
   const bootstrapStatus = useOrchestratorStore((s) => s.bootstrapStatus);
   const error = useOrchestratorStore((s) => s.error);
-  const projects = useOrchestratorStore((s) =>
-    Object.values(s.snapshot.projects).filter((p) => p.status !== "deleted"),
-  );
+  const snapshot = useOrchestratorStore((s) => s.snapshot);
+  const projects = Object.values(snapshot.projects).filter((p) => p.status !== "deleted");
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [projectName, setProjectName] = useState("");

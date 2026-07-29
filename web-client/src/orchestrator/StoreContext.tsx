@@ -1,6 +1,5 @@
-import { createContext, useContext, useRef, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useRef, type ReactNode } from "react";
 import { useStore } from "zustand";
-import { useShallow } from "zustand/react/shallow";
 import type { OrchestratorClientStore } from "./store";
 import type { OrchestratorTransportPort } from "./transport-port";
 import { createOrchestratorClientStore } from "./store";
@@ -27,6 +26,7 @@ export function OrchestratorClientProvider({
   if (!storeRef.current) {
     storeRef.current = createOrchestratorClientStore(port, { token });
   }
+
   return (
     <OrchestratorClientContext.Provider value={storeRef.current}>
       {children}
@@ -46,14 +46,15 @@ export function useOrchestratorStore<T>(
 
 /** Stable action surface from the client store. */
 export function useClientActions() {
-  return useOrchestratorStore(
-    useShallow((s) => ({
-      connect: s.connect,
-      disconnect: s.disconnect,
-      simulateDisconnect: s.simulateDisconnect,
-      reconnect: s.reconnect,
-      dispatch: s.dispatch,
-      retry: s.retry,
-    })),
+  const connect = useOrchestratorStore((s) => s.connect);
+  const disconnect = useOrchestratorStore((s) => s.disconnect);
+  const simulateDisconnect = useOrchestratorStore((s) => s.simulateDisconnect);
+  const reconnect = useOrchestratorStore((s) => s.reconnect);
+  const dispatch = useOrchestratorStore((s) => s.dispatch);
+  const retry = useOrchestratorStore((s) => s.retry);
+
+  return useMemo(
+    () => ({ connect, disconnect, simulateDisconnect, reconnect, dispatch, retry }),
+    [connect, disconnect, simulateDisconnect, reconnect, dispatch, retry],
   );
 }

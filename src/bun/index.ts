@@ -78,7 +78,7 @@ engine.subscribe((event) => {
 
 export type RPC = typeof rpc;
 
-import { BrowserView, BrowserWindow, Updater } from "electrobun/bun";
+import { BrowserView, BrowserWindow, Updater, app } from "electrobun/bun";
 
 const DEV_SERVER_URL = "http://localhost:5173";
 export async function getMainViewUrl(): Promise<string> {
@@ -128,16 +128,30 @@ const rpc = BrowserView.defineRPC<OrchestratorRPCSchema>({
 });
 
 export function createWindow(url: string) {
-  return new BrowserWindow({
+  console.log(`[LabQ Code] Creating BrowserWindow with URL: ${url}`);
+  const win = new BrowserWindow({
     title: "LabQ Code",
     url,
-    frame: { width: 1280, height: 800, x: 100, y: 100 },
+    frame: { width: 1280, height: 800, x: 200, y: 200 },
     rpc,
+    hidden: false,
+    activate: true,
   });
+
+  // Open WebKit DevTools console for debugging
+  try {
+    win.webview.openDevTools();
+  } catch (e) {
+    console.error("[LabQ Code] Could not open DevTools:", e);
+  }
+
+  return win;
 }
 
-// Only launch window automatically when running as main entrypoint
-if (import.meta.main) {
+// The Bun module is imported by unit tests without Electrobun's native FFI
+// bridge. Only the packaged/native process should create the application window.
+if (!app.isCarrotMode) {
   const url = await getMainViewUrl();
+  console.log(`[LabQ Code] Initializing window with URL: ${url}`);
   createWindow(url);
 }

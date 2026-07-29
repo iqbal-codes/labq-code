@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
+import { useEffect } from "react";
 import { describe, it, expect } from "vitest";
+import { App } from "@/App";
+import { OrchestratorClientProvider, useClientActions, useOrchestratorStore } from "@/orchestrator/StoreContext";
 import { FakeTransport } from "@/orchestrator/fake-transport";
 import { createOrchestratorClientStore } from "@/orchestrator/store";
 import { createProjectCommand } from "@/orchestrator/commands";
@@ -93,5 +96,34 @@ describe("store + React integration", () => {
     expect(state).toHaveProperty("snapshot");
     expect(state).toHaveProperty("receipts");
     expect(state).toHaveProperty("recoveryCursor");
+  });
+});
+
+function ClientActionsProbe() {
+  const { connect } = useClientActions();
+  const bootstrapStatus = useOrchestratorStore((s) => s.bootstrapStatus);
+
+  useEffect(() => {
+    if (bootstrapStatus === "idle") void connect();
+  }, [bootstrapStatus, connect]);
+
+  return <span>{bootstrapStatus}</span>;
+}
+
+describe("client action hook", () => {
+  it("keeps bootstrap effects stable across store updates", async () => {
+    render(
+      <OrchestratorClientProvider port={new FakeTransport()}>
+        <ClientActionsProbe />
+      </OrchestratorClientProvider>,
+    );
+    await waitFor(() => expect(screen.getByText("ready")).toBeInTheDocument());
+  });
+});
+
+describe("desktop-compatible app bootstrap", () => {
+  it("renders the orchestration home after fallback transport bootstrap", async () => {
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Projects" })).toBeInTheDocument());
   });
 });
