@@ -45,7 +45,7 @@ export class ReconnectingClient {
     this.environmentId = options.environment_id;
     this.projectId = options.project_id;
     this.threadId = options.thread_id;
-    this.maxReplayRetries = options.maxReplayRetries ?? 3;
+    this.maxReplayRetries = Math.max(1, options.maxReplayRetries ?? 3);
   }
 
   async connect(): Promise<void> {
@@ -86,39 +86,84 @@ export class ReconnectingClient {
 
   async reconnect(): Promise<SyncResult> {
     this.reconnecting = true;
+    let attempts = 0;
     try {
-      await this.ensureSubscriptionActive({ emitInitialSnapshot: false });
-
-      const syncRes = this.transport.sync(this.token, this.lastSequence, {
-        environment_id: this.environmentId,
-        project_id: this.projectId,
-        thread_id: this.threadId,
-      });
-
-      if (!syncRes.ok) {
-        return await this.fallbackToFreshSnapshot("sync_failed");
-      }
-
-      if (syncRes.mode === "up_to_date") {
-        this.reconnecting = false;
-        return syncRes;
-      }
-
-      if (syncRes.mode === "replay") {
-        for (const event of syncRes.events) {
-          if (event.sequence > this.lastSequence) {
-            this.snapshot = applyEvent(this.snapshot, event);
-            this.lastSequence = event.sequence;
-          }
+      while (attempts < this.maxReplayRetries) {
+        attempts++;
+        if (this.subscription) {
+          this.subscription.unsubscribe();
+          this.subscription = null;
         }
-        this.reconnecting = false;
-        return syncRes;
+
+        const currentCursor = this.lastSequence;
+        const syncRes = this.transport.sync(this.token, currentCursor, {
+          environment_id: this.environmentId,
+          project_id: this.projectId,
+          thread_id: this.threadId,
+        });
+
+        if (!syncRes || typeof syncRes !== "object" || !("ok" in syncRes) || !syncRes.ok) {
+          continue;
+        }
+
+        if (syncRes.mode === "up_to_date") {
+          await this.ensureSubscriptionActive({ after_sequence: this.lastSequence, emitInitialSnapshot: false });
+          this.reconnecting = false;
+          return syncRes;
+        }
+
+        if (syncRes.mode === "replay") {
+          const events = syncRes.events;
+          if (events.length === 0 && currentCursor < syncRes.to) {
+            continue;
+          }
+
+          let valid = true;
+          let expectedSeq = currentCursor + 1;
+          for (const ev of events) {
+            if (ev.sequence !== expectedSeq) {
+              valid = false;
+              break;
+            }
+            expectedSeq++;
+          }
+
+          if (!valid) {
+            continue;
+          }
+
+          const resultingSeq = events.length > 0 ? events[events.length - 1].sequence : currentCursor;
+          if (resultingSeq !== syncRes.to) {
+            continue;
+          }
+
+          let tempSnapshot = structuredClone(this.snapshot);
+          for (const ev of events) {
+            tempSnapshot = applyEvent(tempSnapshot, ev);
+          }
+          this.snapshot = tempSnapshot;
+          this.lastSequence = resultingSeq;
+
+          await this.ensureSubscriptionActive({ after_sequence: this.lastSequence, emitInitialSnapshot: false });
+          this.reconnecting = false;
+          return syncRes;
+        }
+
+        if (syncRes.mode === "snapshot") {
+          const snap = syncRes.snapshot;
+          this.snapshot = structuredClone(snap);
+          this.lastSequence = snap.sequence;
+          await this.ensureSubscriptionActive({ after_sequence: this.lastSequence, emitInitialSnapshot: false });
+          this.reconnecting = false;
+          return syncRes;
+        }
       }
 
-      // Mode is "snapshot" or cursor was rejected
-      return await this.fallbackToFreshSnapshot("cursor_rejected");
+      return await this.fallbackToFreshSnapshot("replay_failed");
     } catch {
       return await this.fallbackToFreshSnapshot("exception");
+    } finally {
+      this.reconnecting = false;
     }
   }
 
@@ -128,27 +173,25 @@ export class ReconnectingClient {
    */
   applyLiveEvent(event: DomainEvent): { applied: boolean; gap: boolean } {
     if (event.kind === "SnapshotEmitted") {
-      const snap = event.data.snapshot;
-      this.snapshot = structuredClone(snap);
-      if (snap.sequence > this.lastSequence) {
+      const snap = (event as { snapshot?: Snapshot; data?: { snapshot?: Snapshot } }).snapshot ?? (event as { data?: { snapshot?: Snapshot } }).data?.snapshot;
+      if (snap && snap.sequence > this.lastSequence) {
+        this.snapshot = structuredClone(snap);
         this.lastSequence = snap.sequence;
+        return { applied: true, gap: false };
       }
-      return { applied: true, gap: false };
+      return { applied: false, gap: false };
     }
 
     if (event.sequence <= this.lastSequence) {
-      // Ignore duplicate or older events (at-most-once delivery & cache protection)
       return { applied: false, gap: false };
     }
 
     if (event.sequence > this.lastSequence + 1) {
-      // Sequence gap detected! Trigger reconnect/replay recovery
       this.reconnecting = true;
       this.triggerRecovery();
       return { applied: false, gap: true };
     }
 
-    // Exact expected sequence (lastSequence + 1)
     this.snapshot = applyEvent(this.snapshot, event);
     this.lastSequence = event.sequence;
     return { applied: true, gap: false };
@@ -158,26 +201,7 @@ export class ReconnectingClient {
     if (this.recoveryPromise) return;
     this.reconnecting = true;
 
-    let retries = 0;
-    const executeRecovery = async (): Promise<SyncResult> => {
-      await Promise.resolve();
-      while (retries <= this.maxReplayRetries) {
-        try {
-          const res = await this.reconnect();
-          if (res.ok) {
-            return res;
-          }
-        } catch (err) {
-          if (retries >= this.maxReplayRetries) {
-            break;
-          }
-        }
-        retries++;
-      }
-      return await this.fallbackToFreshSnapshot("max_retries_exceeded");
-    };
-
-    this.recoveryPromise = executeRecovery().finally(() => {
+    this.recoveryPromise = this.reconnect().finally(() => {
       this.recoveryPromise = null;
       this.reconnecting = false;
     });
@@ -199,14 +223,19 @@ export class ReconnectingClient {
       return { ok: false };
     }
 
-    this.snapshot = structuredClone(snapRes);
     if (snapRes.sequence > this.lastSequence) {
+      this.snapshot = structuredClone(snapRes);
       this.lastSequence = snapRes.sequence;
     }
     return { ok: true };
   }
 
   private async fallbackToFreshSnapshot(reason: string): Promise<SyncResult> {
+    if (this.subscription) {
+      this.subscription.unsubscribe();
+      this.subscription = null;
+    }
+
     const snapRes = this.transport.getScopedSnapshot(this.token, {
       environment_id: this.environmentId,
       project_id: this.projectId,
@@ -214,20 +243,18 @@ export class ReconnectingClient {
     });
 
     if (!isSnapshot(snapRes)) {
-      this.reconnecting = false;
-      return {
-        ok: true,
-        mode: "snapshot",
-        sequence: this.lastSequence,
-        snapshot: this.snapshot,
-        reason,
-      };
+      throw new Error(`Failed snapshot fallback: unauthorized or unavailable snapshot (${reason})`);
     }
 
-    this.snapshot = structuredClone(snapRes);
-    this.lastSequence = snapRes.sequence;
+    if (snapRes.sequence < this.lastSequence) {
+      throw new Error(`Failed snapshot fallback: returned snapshot sequence (${snapRes.sequence}) is older than current cursor (${this.lastSequence})`);
+    } else if (snapRes.sequence > this.lastSequence) {
+      this.snapshot = structuredClone(snapRes);
+      this.lastSequence = snapRes.sequence;
+    }
+
+    await this.ensureSubscriptionActive({ after_sequence: this.lastSequence, emitInitialSnapshot: false });
     this.reconnecting = false;
-    await this.ensureSubscriptionActive();
 
     return {
       ok: true,
@@ -238,24 +265,29 @@ export class ReconnectingClient {
     };
   }
 
-  private async ensureSubscriptionActive(options?: { emitInitialSnapshot?: boolean }): Promise<void> {
-    if (!this.connected || !this.subscription) {
-      const subRes = this.transport.createSubscription(
-        this.token,
-        {
-          environment_id: this.environmentId,
-          project_id: this.projectId,
-          thread_id: this.threadId,
-        },
-        options
-      );
-      if (subRes.ok) {
-        this.subscription = subRes.subscription;
-        this.connected = true;
-        this.subscription.onEvent((event) => {
-          this.applyLiveEvent(event);
-        });
-      }
+  private async ensureSubscriptionActive(params?: { after_sequence?: number; emitInitialSnapshot?: boolean }): Promise<void> {
+    if (this.subscription) {
+      this.subscription.unsubscribe();
+      this.subscription = null;
+    }
+    const subRes = this.transport.createSubscription(
+      this.token,
+      {
+        environment_id: this.environmentId,
+        project_id: this.projectId,
+        thread_id: this.threadId,
+        after_sequence: params?.after_sequence,
+      },
+      { emitInitialSnapshot: params?.emitInitialSnapshot ?? true }
+    );
+    if (subRes.ok) {
+      this.subscription = subRes.subscription;
+      this.connected = true;
+      this.subscription.onEvent((event) => {
+        this.applyLiveEvent(event);
+      });
+    } else {
+      throw new Error(`Failed to activate transport subscription: ${subRes.detail}`);
     }
   }
 

@@ -460,4 +460,88 @@ describe("Authoritative Transport and Reconnect Recovery", () => {
     expect(Object.keys(snapshot.threads)).toEqual(["th-1"]);
     expect(Object.keys(snapshot.turns).length).toBe(0);
   });
+
+  test("rejects malformed subscription parameters before authorization", () => {
+    const engine = new OrchestratorEngine();
+    const transport = new OrchestratorTransport({ engine });
+
+    const badAfterSeq = transport.createSubscription(undefined, { after_sequence: -1 } as any);
+    expect(badAfterSeq.ok).toBe(false);
+    if (!badAfterSeq.ok) {
+      expect(badAfterSeq.code).toBe("invalid_wire_shape");
+    }
+
+    const emptyProject = transport.createSubscription(undefined, { project_id: "   " });
+    expect(emptyProject.ok).toBe(false);
+    if (!emptyProject.ok) {
+      expect(emptyProject.code).toBe("invalid_wire_shape");
+    }
+  });
+
+  test("cursor subscription with after_sequence 0 emits snapshot marker when engine cursor is 0", () => {
+    const engine = new OrchestratorEngine();
+    const transport = new OrchestratorTransport({ engine });
+
+    const subRes = transport.createSubscription(undefined, { after_sequence: 0 });
+    expect(subRes.ok).toBe(true);
+    if (subRes.ok) {
+      const received: any[] = [];
+      subRes.subscription.onEvent((e) => received.push(e));
+      expect(received.length).toBe(1);
+      expect(received[0].kind).toBe("SnapshotEmitted");
+      expect(received[0].sequence).toBe(0);
+    }
+  });
+
+  test("scoped recovery sync skips non-matching projects cleanly", async () => {
+    const localDir = makeTempDir();
+    const engine = new OrchestratorEngine();
+    const transport = new OrchestratorTransport({ engine });
+
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p1",
+      project_id: "proj-1",
+      name: "Proj 1",
+      source: { kind: "local_folder", path: localDir },
+    });
+
+    const client = new ReconnectingClient({
+      transport,
+      token: "guest",
+      environment_id: "env-1",
+      project_id: "proj-1",
+    });
+    await client.connect();
+    expect(client.getLastSequence()).toBe(1);
+
+    client.simulateInvoluntaryDisconnect();
+
+    // Create project 2 while client disconnected
+    await engine.dispatchCommand({
+      kind: "create_project",
+      command_id: "p2",
+      project_id: "proj-2",
+      name: "Proj 2",
+      source: { kind: "local_folder", path: localDir },
+    });
+
+    // Create thread in project 1
+    await engine.dispatchCommand({
+      kind: "create_thread",
+      command_id: "t1",
+      thread_id: "th-p1",
+      project_id: "proj-1",
+      model: "pi-default",
+      access_profile: "read-only",
+      interaction_mode: "execute",
+    });
+
+    // Reconnect will encounter non-progressing sequence gap due to omitted proj-2 event
+    const syncRes = await client.reconnect();
+    expect(syncRes.ok).toBe(true);
+    expect(client.getSnapshot().projects["proj-1"]).toBeDefined();
+    expect(client.getSnapshot().projects["proj-2"]).toBeUndefined();
+    expect(client.getSnapshot().threads["th-p1"]).toBeDefined();
+  });
 });

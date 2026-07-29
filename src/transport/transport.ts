@@ -114,6 +114,43 @@ export class OrchestratorTransport {
     params: WireSubscriptionParams,
     options: { emitInitialSnapshot?: boolean } = { emitInitialSnapshot: true }
   ): WireSubscriptionResult {
+    if (!params || typeof params !== "object") {
+      return {
+        ok: false,
+        code: "invalid_wire_shape",
+        detail: "Subscription params must be an object.",
+      };
+    }
+
+    if (params.environment_id !== undefined && (typeof params.environment_id !== "string" || !params.environment_id.trim())) {
+      return {
+        ok: false,
+        code: "invalid_wire_shape",
+        detail: "environment_id must be a non-empty string when provided.",
+      };
+    }
+    if (params.project_id !== undefined && (typeof params.project_id !== "string" || !params.project_id.trim())) {
+      return {
+        ok: false,
+        code: "invalid_wire_shape",
+        detail: "project_id must be a non-empty string when provided.",
+      };
+    }
+    if (params.thread_id !== undefined && (typeof params.thread_id !== "string" || !params.thread_id.trim())) {
+      return {
+        ok: false,
+        code: "invalid_wire_shape",
+        detail: "thread_id must be a non-empty string when provided.",
+      };
+    }
+    if (params.after_sequence !== undefined && (!Number.isFinite(params.after_sequence) || params.after_sequence < 0 || !Number.isInteger(params.after_sequence))) {
+      return {
+        ok: false,
+        code: "invalid_wire_shape",
+        detail: "after_sequence must be a finite non-negative integer when provided.",
+      };
+    }
+
     const scope = {
       environment_id: params.environment_id,
       project_id: params.project_id,
@@ -129,14 +166,44 @@ export class OrchestratorTransport {
     }
 
     const listeners = new Set<(event: DomainEvent) => void>();
-    let initialSnapshotEvent: DomainEvent | null = null;
+    let synchronizationMarker: DomainEvent | null = null;
+    let replayEventsToEmit: DomainEvent[] = [];
+
     const emitInitial = options.emitInitialSnapshot !== false && params.after_sequence === undefined;
+
+    if (params.after_sequence !== undefined) {
+      const syncRes = this.engine.sync(params.after_sequence, scope);
+      if (syncRes.ok) {
+        if (syncRes.mode === "replay") {
+          replayEventsToEmit = syncRes.events.filter((e) => e.sequence > (params.after_sequence ?? 0));
+        } else if (syncRes.mode === "up_to_date") {
+          const snapshot = this.engine.getScopedSnapshot(scope);
+          synchronizationMarker = {
+            kind: "SnapshotEmitted",
+            event_id: `evt_snap_sync_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            command_id: `cmd_snap_sync_${Date.now()}`,
+            sequence: snapshot.sequence,
+            timestamp: new Date().toISOString(),
+            data: { snapshot },
+          };
+        } else if (syncRes.mode === "snapshot") {
+          synchronizationMarker = {
+            kind: "SnapshotEmitted",
+            event_id: `evt_snap_fallback_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+            command_id: `cmd_snap_fallback_${Date.now()}`,
+            sequence: syncRes.snapshot.sequence,
+            timestamp: new Date().toISOString(),
+            data: { snapshot: syncRes.snapshot },
+          };
+        }
+      }
+    }
 
     const engineUnsub = this.engine.subscribe(
       (event) => {
         if (event.kind === "SnapshotEmitted" && listeners.size === 0) {
           if (emitInitial) {
-            initialSnapshotEvent = event;
+            synchronizationMarker = event;
           }
           return;
         }
@@ -147,20 +214,20 @@ export class OrchestratorTransport {
       scope,
       { emitInitialSnapshot: emitInitial }
     );
+
     const subscription: OrchestratorSubscription = {
       onEvent: (listener) => {
         listeners.add(listener);
-        if (initialSnapshotEvent) {
-          const snapshotToEmit = initialSnapshotEvent;
-          initialSnapshotEvent = null;
-          listener(snapshotToEmit);
+        if (synchronizationMarker) {
+          const marker = synchronizationMarker;
+          synchronizationMarker = null;
+          listener(marker);
         }
-        if (params.after_sequence !== undefined && params.after_sequence > 0) {
-          const syncRes = this.engine.sync(params.after_sequence, scope);
-          if (syncRes.ok && syncRes.mode === "replay") {
-            for (const replayEvent of syncRes.events) {
-              listener(replayEvent);
-            }
+        if (replayEventsToEmit.length > 0) {
+          const events = replayEventsToEmit;
+          replayEventsToEmit = [];
+          for (const replayEvent of events) {
+            listener(replayEvent);
           }
         }
         return () => {
