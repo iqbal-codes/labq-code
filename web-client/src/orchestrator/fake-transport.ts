@@ -142,7 +142,7 @@ export class FakeTransport implements OrchestratorTransportPort {
   }
 
   async pickDirectory(): Promise<{ ok: boolean; path?: string; error?: string }> {
-    return { ok: true, path: "/tmp/fake-selected-folder" };
+    return { ok: false, error: "Native directory picker not available" };
   }
   // --- internals ---------------------------------------------------------
 

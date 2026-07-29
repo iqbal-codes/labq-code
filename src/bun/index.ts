@@ -1,6 +1,6 @@
 import { OrchestratorEngine } from "../engine/engine";
 import { OrchestratorTransport } from "../transport/transport";
-import { defineElectrobunRPC } from "electrobun/bun";
+import { defineElectrobunRPC, Utils, app, BrowserView, BrowserWindow, Updater } from "electrobun/bun";
 import type { CommandResult, DomainEvent, Snapshot, SyncResult } from "../domain/types";
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
@@ -8,6 +8,23 @@ import { promisify } from "node:util";
 const execAsync = promisify(exec);
 
 export async function pickDirectoryNative(): Promise<{ ok: boolean; path?: string; error?: string }> {
+  try {
+    if (!app.isCarrotMode) {
+      const paths = await Utils.openFileDialog({
+        startingFolder: "~/",
+        canChooseFiles: false,
+        canChooseDirectory: true,
+        allowsMultipleSelection: false,
+      });
+      if (paths && paths.length > 0 && paths[0].trim()) {
+        return { ok: true, path: paths[0].trim() };
+      }
+      return { ok: false, error: "No directory selected" };
+    }
+  } catch {
+    // Fall back to script execution if FFI call fails
+  }
+
   const platform = process.platform;
   try {
     if (platform === "darwin") {
@@ -96,7 +113,6 @@ const subscriberHandles = new Map<RPC, RPCSubscriptionHandle>();
 
 export type RPC = typeof rpc;
 
-import { BrowserView, BrowserWindow, Updater, app } from "electrobun/bun";
 
 const DEV_SERVER_URL = "http://localhost:5173";
 export async function getMainViewUrl(): Promise<string> {

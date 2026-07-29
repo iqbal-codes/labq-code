@@ -527,6 +527,11 @@ export function EnvironmentHome() {
                         </>
                       )}
                     </div>
+                    {sourceKind === "local_folder" && (
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        Tip: Click <strong className="font-medium">Browse…</strong> to select your folder, or enter the full path manually (e.g. <code className="tt-mono">/Users/name/my-project</code>).
+                      </p>
+                    )}
                   </div>
                 </div>
 
