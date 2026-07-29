@@ -229,9 +229,20 @@ export class OrchestratorEngine {
       sequences,
     };
 
-    // 4. Atomically persist events + receipt to storage before mutating in-memory state
-    await this.storageAdapter.persistCommandResult(newEvents, receipt);
-
+    // 4. Atomically persist events + receipt to storage before mutating in-memory state.
+    // A managed acquisition is provisional until this write succeeds. If the
+    // durable write fails, release only that managed workspace and return the
+    // sequence allocator to its pre-command position so an idempotent retry
+    // can safely commit the command.
+    try {
+      await this.storageAdapter.persistCommandResult(newEvents, receipt);
+    } catch (error) {
+      this.nextSequence -= newEvents.length;
+      if (resolvedSource?.status === "acquired" && resolvedSource.workspace_path) {
+        this.sourceManager.cleanupPath(resolvedSource.workspace_path);
+      }
+      throw error;
+    }
     // 5. Update in-memory state
     for (const event of newEvents) {
       this.events.push(event);

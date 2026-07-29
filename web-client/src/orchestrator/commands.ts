@@ -17,13 +17,14 @@ export function createProjectCommand(input: {
   name: string;
   source: SourceDescriptor;
   project_id?: string;
+  command_id?: string;
 }): Command {
   return {
     kind: "create_project",
     name: input.name,
     source: input.source,
     project_id: input.project_id,
-    command_id: newCommandId(),
+    command_id: input.command_id ?? newCommandId(),
   };
 }
 
