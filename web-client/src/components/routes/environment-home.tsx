@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { FolderOpenIcon } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 import { useOrchestratorStore, useClientActions } from "@/orchestrator/StoreContext";
 import { createProjectCommand } from "@/orchestrator/commands";
@@ -99,6 +100,62 @@ export function EnvironmentHome() {
   const [formError, setFormError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const [createCommandId, setCreateCommandId] = useState<string | undefined>();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handlePickDirectory = async () => {
+    try {
+      if ("showDirectoryPicker" in window && typeof window.showDirectoryPicker === "function") {
+        const handle = await window.showDirectoryPicker();
+        const dirPath = (handle as { path?: string }).path || handle.name;
+        if (dirPath) {
+          setLocator(dirPath);
+          setFormError(null);
+          if (!projectName.trim()) {
+            setProjectName(handle.name);
+          }
+        }
+        return;
+      }
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === "AbortError") {
+        return;
+      }
+    }
+    fileInputRef.current?.click();
+  };
+
+  const handleFolderInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    const firstFile = files[0];
+    const fullPath = (firstFile as unknown as { path?: string }).path;
+    let folderPath = "";
+    let folderName = "";
+
+    if (fullPath && typeof fullPath === "string") {
+      const sep = fullPath.includes("\\") ? "\\" : "/";
+      const parts = fullPath.split(sep);
+      parts.pop();
+      folderPath = parts.join(sep);
+      folderName = parts[parts.length - 1] || "Selected Folder";
+    } else if (firstFile.webkitRelativePath) {
+      const parts = firstFile.webkitRelativePath.split("/");
+      folderName = parts[0] || "Selected Folder";
+      folderPath = folderName;
+    } else {
+      folderPath = firstFile.name;
+      folderName = firstFile.name;
+    }
+
+    if (folderPath) {
+      setLocator(folderPath);
+      setFormError(null);
+      if (!projectName.trim() && folderName) {
+        setProjectName(folderName);
+      }
+    }
+    e.target.value = "";
+  };
 
   const filteredSources = CANONICAL_SOURCES.filter(
     (s) =>
@@ -407,20 +464,47 @@ export function EnvironmentHome() {
                     <Label htmlFor="source-locator">
                       {sourceKind === "local_folder" ? "Folder path" : "Repository URL"}
                     </Label>
-                    <Input
-                      id="source-locator"
-                      value={locator}
-                      onChange={(e) => {
-                        setLocator(e.target.value);
-                        setFormError(null);
-                      }}
-                      onKeyDown={handleFormKeyDown}
-                      placeholder={
-                        sourceKind === "local_folder"
-                          ? "/path/to/code"
-                          : "https://github.com/user/repo.git"
-                      }
-                    />
+                    <div className="flex items-center gap-2">
+                      <Input
+                        id="source-locator"
+                        value={locator}
+                        onChange={(e) => {
+                          setLocator(e.target.value);
+                          setFormError(null);
+                        }}
+                        onKeyDown={handleFormKeyDown}
+                        placeholder={
+                          sourceKind === "local_folder"
+                            ? "/path/to/code"
+                            : "https://github.com/user/repo.git"
+                        }
+                        className="flex-1"
+                      />
+                      {sourceKind === "local_folder" && (
+                        <>
+                          <input
+                            type="file"
+                            ref={fileInputRef}
+                            {...({ webkitdirectory: "", directory: "" } as React.InputHTMLAttributes<HTMLInputElement>)}
+                            className="hidden"
+                            onChange={handleFolderInputChange}
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              void handlePickDirectory();
+                            }}
+                            title="Browse local folder"
+                            className="shrink-0 flex items-center gap-1.5"
+                          >
+                            <FolderOpenIcon className="size-4" />
+                            <span>Browse…</span>
+                          </Button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
 
