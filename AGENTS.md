@@ -2,11 +2,11 @@
 
 ### Issue tracker
 
-Issues and specs live as markdown files under `.scratch/<feature>/`. See `docs/agents/issue-tracker.md`.
+Issues and specs live as GitHub issues for this repository. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-Uses the five default canonical triage labels. See `docs/agents/triage-labels.md`.
+Uses the five default canonical triage labels on GitHub Issues. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
