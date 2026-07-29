@@ -32,6 +32,9 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
     css: true,
+    alias: {
+      "electrobun/view": resolvePath("src/orchestrator/electrobun-stub.ts"),
+    },
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
   },
   // Vite Plus `check` runs format, lint, and the type checker.

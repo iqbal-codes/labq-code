@@ -3,6 +3,21 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { SourceManager } from "../src/source/source-manager.js";
+import { OrchestratorEngine } from "../src/engine/engine.js";
+import { InMemoryStorageAdapter } from "../src/engine/storage-adapter.js";
+
+class FailingPersistenceAdapter extends InMemoryStorageAdapter {
+  fail = true;
+
+  override async persistCommandResult(
+    events: Parameters<InMemoryStorageAdapter["persistCommandResult"]>[0],
+    receipt: Parameters<InMemoryStorageAdapter["persistCommandResult"]>[1],
+  ): Promise<void> {
+    if (this.fail) throw new Error("durable write failed");
+    await super.persistCommandResult(events, receipt);
+  }
+}
+
 import { SourceDescriptor } from "../src/domain/types.js";
 
 describe("SourceManager", () => {
@@ -218,5 +233,32 @@ describe("SourceManager", () => {
 
     // User folder and file MUST remain intact
     expect(fs.existsSync(userFile)).toBe(true);
+  });
+  test("cleans managed acquisition when durable project write fails and retries safely", async () => {
+    const managedRoot = makeTempDir();
+    const storage = new FailingPersistenceAdapter();
+    const sourceManager = new SourceManager({
+      managedWorkspaceRoot: managedRoot,
+      gitCloner: async (_url, targetPath) => {
+        fs.writeFileSync(path.join(targetPath, "README.md"), "managed clone");
+      },
+    });
+    const engine = new OrchestratorEngine(sourceManager, undefined, storage);
+    const command = {
+      kind: "create_project" as const,
+      name: "Retryable project",
+      source: { kind: "git_url" as const, url: "https://example.com/retry.git" },
+      command_id: "cmd-durable-write-failure",
+    };
+
+    await expect(engine.dispatchCommand(command)).rejects.toThrow("durable write failed");
+    expect(fs.readdirSync(managedRoot)).toHaveLength(0);
+    expect(engine.getSnapshot().sequence).toBe(0);
+
+    storage.fail = false;
+    const retry = await engine.dispatchCommand(command);
+    expect(retry.ok).toBe(true);
+    expect(engine.getSnapshot().sequence).toBe(1);
+    expect(storage.loadAll().events.map((event) => event.sequence)).toEqual([1]);
   });
 });
