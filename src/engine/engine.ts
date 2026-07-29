@@ -9,7 +9,7 @@ import type {
   Turn,
   SyncResult,
 } from "../domain/types.js";
-import { boundChangeSummary } from "../domain/types.js";
+import { boundChangeSummary, DEFAULT_ENVIRONMENT_ID } from "../domain/types.js";
 import { sanitizeErrorMetadata, type CanonicalProviderEvent, type StartTurnParams } from "./provider-adapter.js";
 import { SourceManager } from "../source/source-manager.js";
 import { decideCommand } from "./decider.js";
@@ -266,10 +266,16 @@ export class OrchestratorEngine {
       const active = turnId
         ? this.activeTurns.get(turnId)
         : Array.from(this.activeTurns.values()).find((a) => a.thread_id === command.thread_id);
+      const thread = this.snapshot.threads[command.thread_id];
+      const projectId = thread ? thread.project_id : "";
+      const envId = command.environment_id || DEFAULT_ENVIRONMENT_ID;
+
       if (active) {
         if (command.kind === "stop_turn") {
           this.providerService
             .stopTurn(active.providerName, {
+              environment_id: envId,
+              project_id: projectId,
               turn_id: active.turn_id,
               thread_id: command.thread_id,
             })
@@ -277,6 +283,8 @@ export class OrchestratorEngine {
         } else {
           this.providerService
             .interruptTurn(active.providerName, {
+              environment_id: envId,
+              project_id: projectId,
               turn_id: active.turn_id,
               thread_id: command.thread_id,
             })
@@ -287,6 +295,8 @@ export class OrchestratorEngine {
       } else if (command.kind === "stop_turn") {
         this.providerService
           .stopTurn(this.resolveProviderName(command.thread_id), {
+            environment_id: envId,
+            project_id: projectId,
             turn_id: command.turn_id || "",
             thread_id: command.thread_id,
           })
@@ -303,11 +313,18 @@ export class OrchestratorEngine {
           command.kind === "respond_approval"
             ? { decision: command.decision }
             : { values: command.values };
+        const turn = this.snapshot.turns[command.turn_id];
+        const thread = turn ? this.snapshot.threads[turn.thread_id] : undefined;
         this.providerService
           .respondToRequest(active.providerName, {
-            request_id: command.request_id,
-            turn_id: command.turn_id,
+            environment_id: command.environment_id || DEFAULT_ENVIRONMENT_ID,
+            project_id: command.project_id || (turn ? turn.project_id : ""),
             thread_id: command.thread_id,
+            turn_id: command.turn_id,
+            provider_name: command.provider_name || "pi",
+            provider_instance_id: command.provider_instance_id || "pi-default",
+            session_id: command.session_id || (turn?.session_id || thread?.session_id || ""),
+            request_id: command.request_id,
             response,
           })
           .catch(() => {});
@@ -361,8 +378,13 @@ export class OrchestratorEngine {
     this.activeTurns.set(turnId, activeStream);
 
     const startParams: StartTurnParams = {
-      turn_id: turnId,
+      environment_id: command.environment_id || DEFAULT_ENVIRONMENT_ID,
+      project_id: project.id,
       thread_id: command.thread_id,
+      turn_id: turnId,
+      provider_name: "pi",
+      provider_instance_id: "pi-default",
+      session_id: thread.session_id,
       project_workspace_path: workspacePath,
       model: thread.model,
       access_profile: thread.access_profile,
@@ -378,11 +400,16 @@ export class OrchestratorEngine {
       const providerEvents = this.providerService.startTurn(providerName, startParams);
 
       let turnRunning = false;
+      const seenProviderEvents = new Set<string>();
 
       for await (const providerEvent of providerEvents) {
-        // Abort check: stop processing provider events if interrupted/stopped
         if (abortController.signal.aborted) {
           break;
+        }
+        if (providerEvent.provider_event_id) {
+          const key = `${turnId}:${providerEvent.provider_event_id}`;
+          if (seenProviderEvents.has(key)) continue;
+          seenProviderEvents.add(key);
         }
 
         // If this is the first non-failure event and the provider hasn't
@@ -393,7 +420,26 @@ export class OrchestratorEngine {
         ) {
           const turn = this.snapshot.turns[turnId];
           if (turn && turn.status === "queued") {
-            // Only auto-emit if the provider event isn't itself a start signal
+            const currentThread = this.snapshot.threads[command.thread_id];
+            const sessionId = currentThread?.session_id || `session-${command.thread_id}`;
+            await this.appendStreamEvent(
+              this.makeDomainEvent(
+                {
+                  kind: "SessionStarted",
+                  data: {
+                    environment_id: command.environment_id || DEFAULT_ENVIRONMENT_ID,
+                    project_id: project.id,
+                    thread_id: command.thread_id,
+                    turn_id: turnId,
+                    provider_name: "pi",
+                    provider_instance_id: "pi-default",
+                    session_id: sessionId,
+                  },
+                },
+                turnId,
+                command
+              )
+            );
             if (providerEvent.kind !== "provider_turn_started") {
               await this.appendStreamEvent(
                 this.makeDomainEvent(
@@ -624,13 +670,22 @@ export class OrchestratorEngine {
         ];
       }
       case "approval_requested": {
-        const resolvedThreadId = this.resolveTurnThreadId(turnId, command);
+        const turn = this.snapshot.turns[turnId];
+        const thread = turn ? this.snapshot.threads[turn.thread_id] : undefined;
+        const resolvedThreadId = turn ? turn.thread_id : (command as { thread_id?: string }).thread_id || "";
         const request = {
           id: providerEvent.request_id,
-          turn_id: turnId,
+          environment_id: turn ? turn.environment_id : command.environment_id,
+          project_id: turn ? turn.project_id : (thread ? thread.project_id : ""),
           thread_id: resolvedThreadId,
-          kind: "approval" as const,
+          turn_id: turnId,
+          provider_name: "pi" as const,
+          provider_instance_id: "pi-default" as const,
+          session_id: turn?.session_id || thread?.session_id || "",
           operation: providerEvent.operation,
+          target_scope: providerEvent.target_scope,
+          impact: providerEvent.impact,
+          kind: "approval" as const,
           description: providerEvent.description,
           fields: [],
           status: "pending" as const,
@@ -644,18 +699,28 @@ export class OrchestratorEngine {
             },
             turnId,
             command,
-            ts
+            ts,
+            providerEvent.provider_event_id
           ),
         ];
       }
       case "input_requested": {
-        const resolvedThreadId = this.resolveTurnThreadId(turnId, command);
+        const turn = this.snapshot.turns[turnId];
+        const thread = turn ? this.snapshot.threads[turn.thread_id] : undefined;
+        const resolvedThreadId = turn ? turn.thread_id : (command as { thread_id?: string }).thread_id || "";
         const request = {
           id: providerEvent.request_id,
-          turn_id: turnId,
+          environment_id: turn ? turn.environment_id : command.environment_id,
+          project_id: turn ? turn.project_id : (thread ? thread.project_id : ""),
           thread_id: resolvedThreadId,
-          kind: "input" as const,
+          turn_id: turnId,
+          provider_name: "pi" as const,
+          provider_instance_id: "pi-default" as const,
+          session_id: turn?.session_id || thread?.session_id || "",
           operation: providerEvent.operation,
+          target_scope: providerEvent.target_scope,
+          impact: providerEvent.impact,
+          kind: "input" as const,
           description: providerEvent.description,
           fields: providerEvent.fields,
           status: "pending" as const,
@@ -669,7 +734,8 @@ export class OrchestratorEngine {
             },
             turnId,
             command,
-            ts
+            ts,
+            providerEvent.provider_event_id
           ),
         ];
       }
@@ -698,12 +764,15 @@ export class OrchestratorEngine {
    */
   private makeDomainEvent(
     draft: { kind: string; data: Record<string, unknown> },
-    _turnId: string,
+    turnId: string,
     command: Command,
-    timestamp?: string
+    timestamp?: string,
+    providerEventId?: string
   ): DomainEvent {
     const seq = this.nextSequence++;
     const ts = timestamp || new Date().toISOString();
+    const turn = this.snapshot.turns[turnId];
+    const thread = turn ? this.snapshot.threads[turn.thread_id] : undefined;
     return {
       sequence: seq,
       event_id: `evt-${seq}-${Math.random().toString(36).slice(2, 8)}`,
@@ -711,6 +780,13 @@ export class OrchestratorEngine {
       command_id: command.command_id,
       correlation_id: command.correlation_id || command.command_id,
       causation_id: command.causation_id,
+      provider_name: turn?.provider_name || "pi",
+      provider_instance_id: turn?.provider_instance_id || "pi-default",
+      session_id: turn?.session_id || thread?.session_id,
+      request_id: draft.kind === "ApprovalRequested" || draft.kind === "InputRequested"
+        ? (draft.data.request as { id: string })?.id
+        : (draft.kind === "PendingRequestResolved" ? (draft.data.request_id as string) : undefined),
+      provider_event_id: providerEventId,
       kind: draft.kind,
       data: draft.data,
     } as DomainEvent;
@@ -781,6 +857,8 @@ export class OrchestratorEngine {
       case "ThreadDeleted":
       case "SessionStopped":
         return { thread_id: event.data.thread_id };
+      case "SessionStarted":
+        return { project_id: event.data.project_id, thread_id: event.data.thread_id };
       case "TurnQueued":
         return { thread_id: event.data.turn.thread_id };
       case "TurnStarted":

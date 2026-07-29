@@ -251,4 +251,14 @@ describe("EnvironmentHome - Source-Aware Project Onboarding", () => {
       expect(screen.getByPlaceholderText("Search sources…")).toBeInTheDocument();
     });
   });
+  it("renders Browse button for local folder source", async () => {
+    const { user } = renderEnvironmentHome();
+
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Projects" })).toBeInTheDocument());
+    await user.click(screen.getAllByRole("button", { name: "Add project" })[0]);
+    await user.click(screen.getByText("Local folder"));
+
+    const browseButton = screen.getByRole("button", { name: /Browse…/i });
+    expect(browseButton).toBeInTheDocument();
+  });
 });

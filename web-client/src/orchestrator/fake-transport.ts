@@ -1,12 +1,14 @@
-import type {
-  Command,
-  CommandResult,
-  DomainEvent,
-  Project,
-  Snapshot,
-  SourceDescriptor,
-  Thread,
-  Turn,
+import {
+  DEFAULT_ENVIRONMENT_ID,
+  validateImageAttachments,
+  type Command,
+  type CommandResult,
+  type DomainEvent,
+  type Project,
+  type Snapshot,
+  type SourceDescriptor,
+  type Thread,
+  type Turn,
 } from "@labq/domain/types";
 import { applyEvent } from "@labq/engine/projector";
 import type {
@@ -46,7 +48,8 @@ export class FakeTransport implements OrchestratorTransportPort {
   private listeners = new Set<Listener>();
   private seenCommands = new Map<string, CommandResult>();
   private forcedSnapshotError: TransportError | null = null;
-
+  private simulatedFailure: { code: string; detail: string } | null = null;
+  private eventLog: DomainEvent[] = [];
   constructor(opts?: { snapshotError?: TransportError }) {
     const empty: Snapshot = {
       sequence: 0,
@@ -87,6 +90,9 @@ export class FakeTransport implements OrchestratorTransportPort {
     this.forcedSnapshotError = error;
   }
 
+  setSimulatedFailure(failure: { code: string; detail: string } | null): void {
+    this.simulatedFailure = failure;
+  }
   getScopedSnapshot(scope: SubscriptionScope): TransportSnapshotResult {
     if (this.forcedSnapshotError) return this.forcedSnapshotError;
     return this.scopeSnapshot(this.snapshot, scope);
@@ -96,10 +102,18 @@ export class FakeTransport implements OrchestratorTransportPort {
     if (cursor >= this.snapshot.sequence) {
       return { ok: true, mode: "up_to_date", sequence: this.snapshot.sequence };
     }
-    // The fake keeps the full event log implicitly via the snapshot; for replay
-    // we surface the events by re-deriving them is unnecessary — a real replay
-    // would return stored events. Here we fall back to the authoritative
-    // snapshot when the cursor is behind, which the store treats as fallback.
+    const replayable = this.eventLog.filter(
+      (e) => e.sequence > cursor && this.matchesScope(scope, e)
+    );
+    if (replayable.length > 0 && replayable[0].sequence === cursor + 1) {
+      return {
+        ok: true,
+        mode: "replay",
+        from: cursor + 1,
+        to: this.snapshot.sequence,
+        events: replayable,
+      };
+    }
     return {
       ok: true,
       mode: "snapshot",
@@ -123,9 +137,7 @@ export class FakeTransport implements OrchestratorTransportPort {
       return { ...existing, duplicate: true };
     }
     const result = this.reduce(command);
-    if (result.ok) {
-      this.seenCommands.set(command.command_id, result);
-    }
+    this.seenCommands.set(command.command_id, result);
     return result;
   }
 
@@ -149,10 +161,11 @@ export class FakeTransport implements OrchestratorTransportPort {
     if (d.project_id) return d.project_id as string;
     if (d.thread) return (d.thread as Thread).project_id;
     if (d.thread_id) return this.snapshot.threads[d.thread_id as string]?.project_id;
-    if (d.turn)
-      return (d.turn as Turn).thread_id
-        ? this.snapshot.threads[(d.turn as Turn).thread_id]?.project_id
-        : undefined;
+    if (d.turn) return this.snapshot.threads[(d.turn as Turn).thread_id]?.project_id;
+    if (d.turn_id) {
+      const turn = this.snapshot.turns[d.turn_id as string];
+      return turn ? this.snapshot.threads[turn.thread_id]?.project_id : undefined;
+    }
     return undefined;
   }
 
@@ -161,7 +174,7 @@ export class FakeTransport implements OrchestratorTransportPort {
     if (d.thread) return (d.thread as Thread).id;
     if (d.thread_id) return d.thread_id as string;
     if (d.turn) return (d.turn as Turn).thread_id;
-    if (d.turn_id) return d.turn_id as string;
+    if (d.turn_id) return this.snapshot.turns[d.turn_id as string]?.thread_id || (d.turn_id as string);
     return undefined;
   }
 
@@ -171,7 +184,7 @@ export class FakeTransport implements OrchestratorTransportPort {
     commandId: string,
   ): DomainEvent {
     this.sequence += 1;
-    return {
+    const evt = {
       kind,
       data,
       sequence: this.sequence,
@@ -179,15 +192,26 @@ export class FakeTransport implements OrchestratorTransportPort {
       timestamp: nowIso(),
       command_id: commandId,
     } as DomainEvent;
+    this.eventLog.push(evt);
+    return evt;
   }
 
   private reduce(command: Command): CommandResult {
     const id = command.command_id;
+    const envId = command.environment_id || DEFAULT_ENVIRONMENT_ID;
+
+    if (this.simulatedFailure) {
+      const fail = this.simulatedFailure;
+      this.simulatedFailure = null;
+      return { ok: false, code: fail.code, detail: fail.detail };
+    }
+
     switch (command.kind) {
       case "create_project": {
         const projectId = command.project_id ?? uid();
         const project: Project = {
           id: projectId,
+          environment_id: envId,
           name: command.name,
           source: normalizeSource(command.source),
           status: "active",
@@ -207,13 +231,25 @@ export class FakeTransport implements OrchestratorTransportPort {
         this.emit(this.nextEvent("ProjectDeleted", { project_id: command.project_id }, id));
         return { ok: true, project_id: command.project_id, status: "deleted" };
       case "create_thread": {
+        const project = this.snapshot.projects[command.project_id];
+        if (project && project.source.status === "setup_required") {
+          return {
+            ok: false,
+            code: "source_setup_required",
+            detail: `Project source '${project.source.locator}' is setup-required and must be configured before creating threads.`,
+          };
+        }
         const threadId = command.thread_id ?? uid();
         const thread: Thread = {
           id: threadId,
+          environment_id: envId,
           project_id: command.project_id,
+          provider_name: "pi",
+          provider_instance_id: "pi-default",
+          session_id: `session-${uid().slice(0, 8)}`,
           title: command.title ?? "New thread",
           status: "active",
-          session_status: "none",
+          session_status: "ready",
           model: command.model,
           access_profile: command.access_profile,
           interaction_mode: command.interaction_mode,
@@ -233,10 +269,25 @@ export class FakeTransport implements OrchestratorTransportPort {
         this.emit(this.nextEvent("ThreadDeleted", { thread_id: command.thread_id }, id));
         return { ok: true, thread_id: command.thread_id, status: "deleted" };
       case "start_turn": {
+        const imageErr = validateImageAttachments(command.content.images);
+        if (imageErr) {
+          const isCount = imageErr.includes("exceeds maximum");
+          return {
+            ok: false,
+            code: isCount ? "image_bounds_exceeded" : "image_size_exceeded",
+            detail: imageErr,
+          };
+        }
+        const thread = this.snapshot.threads[command.thread_id];
         const turnId = command.turn_id ?? uid();
         const turn: Turn = {
           id: turnId,
+          environment_id: envId,
+          project_id: thread ? thread.project_id : "",
           thread_id: command.thread_id,
+          provider_name: "pi",
+          provider_instance_id: "pi-default",
+          session_id: thread?.session_id,
           status: "queued",
           user_message: command.content,
           activities: {},

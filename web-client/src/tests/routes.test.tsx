@@ -16,6 +16,7 @@ import {
   NotFound,
 } from "@/components/routes/route-states";
 import { StatusPill } from "@/components/ui/status";
+import { validateImageAttachments } from "@labq/domain/types";
 
 describe("route-state components", () => {
   it("renders LoadingState", () => {
@@ -125,5 +126,34 @@ describe("desktop-compatible app bootstrap", () => {
   it("renders the orchestration home after fallback transport bootstrap", async () => {
     render(<App />);
     await waitFor(() => expect(screen.getByRole("heading", { name: "Projects" })).toBeInTheDocument());
+  });
+});
+describe("composer image attachment validation", () => {
+  it("validates image types, counts, and size bounds", () => {
+    expect(validateImageAttachments([])).toBeNull();
+
+    const validImg = {
+      filename: "test.png",
+      media_type: "image/png",
+      size_bytes: 100,
+      data: Buffer.alloc(100).toString("base64"),
+    };
+    expect(validateImageAttachments([validImg])).toBeNull();
+
+    const badType = {
+      filename: "test.txt",
+      media_type: "text/plain",
+      size_bytes: 100,
+      data: Buffer.alloc(100).toString("base64"),
+    };
+    expect(validateImageAttachments([badType])).toContain("Must be an image/* type");
+
+    const six = Array.from({ length: 6 }, (_, i) => ({
+      filename: `img${i}.png`,
+      media_type: "image/png",
+      size_bytes: 100,
+      data: Buffer.alloc(100).toString("base64"),
+    }));
+    expect(validateImageAttachments(six)).toContain("exceeds maximum of 5");
   });
 });

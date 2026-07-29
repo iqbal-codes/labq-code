@@ -170,6 +170,26 @@ export function applyEvent(
       break;
     }
     // Turn events
+    case "SessionStarted": {
+      const { thread_id, turn_id, session_id } = event.data;
+      const th = next.threads[thread_id];
+      if (th) {
+        next.threads[th.id] = {
+          ...th,
+          session_id,
+          updated_at: event.timestamp,
+        };
+      }
+      const trn = next.turns[turn_id];
+      if (trn) {
+        next.turns[trn.id] = {
+          ...trn,
+          session_id,
+          updated_at: event.timestamp,
+        };
+      }
+      break;
+    }
     case "TurnQueued": {
       const turn = event.data.turn;
       next.turns[turn.id] = structuredClone(turn);
@@ -341,6 +361,8 @@ export function applyEvent(
     case "TurnCompleted": {
       const turn = next.turns[event.data.turn_id];
       if (!turn) break;
+      // Terminal states are immutable
+      if (turn.status === "failed" || turn.status === "interrupted") break;
       const thread = next.threads[turn.thread_id];
       if (thread && thread.session_status !== "stopped") {
         next.threads[thread.id] = {
@@ -351,10 +373,19 @@ export function applyEvent(
       }
       const derivedSummary = deriveChangeSummaryFromToolActivities(turn.id, turn.activities, event.timestamp);
       const finalSummary = derivedSummary ?? turn.change_summary;
+      const assistantMessage = turn.assistant_message
+        ? { ...turn.assistant_message, is_complete: true }
+        : {
+            id: `msg-${turn.id}`,
+            turn_id: turn.id,
+            parts: [],
+            is_complete: true,
+          };
       next.turns[turn.id] = structuredClone({
         ...turn,
         status: "completed",
         change_summary: finalSummary,
+        assistant_message: assistantMessage,
         updated_at: event.timestamp,
       });
       break;

@@ -12,7 +12,7 @@ import type {
  * Canonical provider event — normalized from any provider's SDK events.
  * Raw provider payloads never cross into orchestration state.
  */
-export type CanonicalProviderEvent =
+export type CanonicalProviderEvent = (
   | { kind: "provider_turn_started" }
   | { kind: "assistant_text_delta"; text: string }
   | { kind: "tool_activity_began"; activity_id: string; tool: string; input?: unknown }
@@ -21,16 +21,22 @@ export type CanonicalProviderEvent =
   | { kind: "assistant_message_completed" }
   | { kind: "provider_turn_completed" }
   | { kind: "provider_turn_failed"; code: string; detail: string }
-  | { kind: "approval_requested"; request_id: string; operation: string; description?: string }
-  | { kind: "input_requested"; request_id: string; operation: string; description?: string; fields: InputField[] }
-  | { kind: "change_summary"; turn_id?: string; summary: ChangeSummary };
+  | { kind: "approval_requested"; request_id: string; operation: string; target_scope: string; impact: string; description?: string }
+  | { kind: "input_requested"; request_id: string; operation: string; target_scope: string; impact: string; description?: string; fields: InputField[] }
+  | { kind: "change_summary"; turn_id?: string; summary: ChangeSummary }
+) & { provider_event_id?: string };
 
 /**
  * Parameters for starting a turn on a provider.
  */
 export interface StartTurnParams {
-  turn_id: string;
+  environment_id: string;
+  project_id: string;
   thread_id: string;
+  turn_id: string;
+  provider_name: "pi";
+  provider_instance_id: "pi-default";
+  session_id?: string;
   project_workspace_path: string;
   model: PiModelId;
   access_profile: RuntimeAccessProfile;
@@ -47,9 +53,14 @@ export interface StartTurnParams {
  * Parameters for responding to a pending approval or structured-input request.
  */
 export interface RespondToRequestParams {
-  request_id: string;
-  turn_id: string;
+  environment_id: string;
+  project_id: string;
   thread_id: string;
+  turn_id: string;
+  provider_name: "pi";
+  provider_instance_id: "pi-default";
+  session_id: string;
+  request_id: string;
   response: PendingRequestResponse;
 }
 
@@ -57,16 +68,20 @@ export interface RespondToRequestParams {
  * Parameters for interrupting an active turn.
  */
 export interface InterruptTurnParams {
-  turn_id: string;
+  environment_id: string;
+  project_id: string;
   thread_id: string;
+  turn_id: string;
 }
 
 /**
  * Parameters for stopping (hard-disposing) a turn.
  */
 export interface StopTurnParams {
-  turn_id: string;
+  environment_id: string;
+  project_id: string;
   thread_id: string;
+  turn_id?: string;
 }
 
 /**
